@@ -1,1 +1,3 @@
-# powershell-scripts
+# Powershell Scripts
+
+Some PowerShell scripts for Windows PC maintenance.
