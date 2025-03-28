@@ -1,4 +1,3 @@
 # Powershell Scripts
 
-Some PowerShell scripts for Windows PC maintenance.
-
+Some PowerShell and AutoHotKey scripts for Windows PC maintenance.
