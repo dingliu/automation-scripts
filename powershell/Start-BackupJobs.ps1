@@ -1,6 +1,7 @@
 #Requires -Version 7.0
 #Requires -Modules PSToml
 
+
 #region Functions
 function Test-EnvironmentVariable {
     [CmdletBinding()]
@@ -104,10 +105,24 @@ function Start-RobocopyBackup {
         return $false
     }
 }
-#endregion
+#endregion Functions
 
-# Configuration path
-$configPath = "$env:USERPROFILE\Dev\github\dingliu\private-config-backup\backup.toml"
+
+#region Constants
+# Configuration TOML filepath
+$CONFIG_PATH_ENV_VAR_NAME = 'BACKUP_CONFIG_FILEPATH'
+#endregion Constants
+
+
+#region Main
+# Check if the environment variable for config path is set
+if (Test-EnvironmentVariable -Name $CONFIG_PATH_ENV_VAR_NAME) {
+    $configPath = [Environment]::GetEnvironmentVariable($CONFIG_PATH_ENV_VAR_NAME)
+} else {
+    Write-Log "Environment variable '$CONFIG_PATH_ENV_VAR_NAME' is not set." -Color Red
+    Write-Log "Please set the environment variable to point to the backup.toml file." -Color Red
+    exit 1
+}
 
 # Read and parse backup.toml configuration
 try {
@@ -163,3 +178,4 @@ foreach ($target in $config.static.targets) {
 }
 
 Write-Log "All backup jobs completed." -Color Magenta
+#endregion Main
