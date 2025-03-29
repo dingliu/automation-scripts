@@ -67,7 +67,7 @@ function Start-RobocopyBackup {
     }
 
     # Prepare the command
-    $robocopyArgs = @($Source, $Destination) + $roboOptions
+    $robocopyArgs = @("'$Source'", "'$Destination'") + $roboOptions
 
     Write-Log "Starting Robocopy backup from '$Source' to '$Destination'" -Color Cyan
     Write-Log "Options: $($roboOptions -join ' ')" -Color Gray
