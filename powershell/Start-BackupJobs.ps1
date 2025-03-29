@@ -111,7 +111,11 @@ $configPath = "$env:USERPROFILE\Dev\github\dingliu\private-config-backup\backup.
 
 # Read and parse backup.toml configuration
 try {
-    $config = ConvertFrom-Toml -Path $configPath
+    $tomlContent = Get-Content -Path $configPath -Encoding [System.Text.Encoding]::UTF8 -Raw
+    $config = ConvertFrom-Toml -InputObject $tomlContent
+    if (-not $config) {
+        throw "Failed to parse TOML configuration."
+    }
     Write-Host "Configuration loaded successfully from $configPath" -ForegroundColor Green
 }
 catch {
