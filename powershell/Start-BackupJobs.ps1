@@ -67,7 +67,13 @@ function Start-RobocopyBackup {
     }
 
     # Prepare the command
-    $robocopyArgs = @("'$Source'", "'$Destination'") + $roboOptions
+    # ========================================================================
+    # Double quotes are used to handle spaces in paths.
+    # However, because both source and destination have a trailing backslash,
+    # an extra backslash is added to escape the quotes. This is necessary to
+    # ensure the paths are correctly interpreted by Robocopy.
+    # ========================================================================
+    $robocopyArgs = @("`"$Source\`"", "`"$Destination\`"") + $roboOptions
 
     Write-Log "Starting Robocopy backup from '$Source' to '$Destination'" -Color Cyan
     Write-Log "Options: $($roboOptions -join ' ')" -Color Gray
