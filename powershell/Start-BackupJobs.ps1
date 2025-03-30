@@ -1,6 +1,11 @@
 #Requires -Version 7.0
 #Requires -Modules PSToml
 
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $false, HelpMessage = "Run in dry-run mode without making actual changes")]
+    [switch]$DryRun
+)
 
 #region Functions
 function Test-EnvironmentVariable {
@@ -48,7 +53,8 @@ function Start-RobocopyBackup {
     param(
         [string]$Source,
         [string]$Destination,
-        [string[]]$Options
+        [string[]]$Options,
+        [switch]$DryRun = $false
     )
 
     # Ensure source and destination paths end with a backslash
@@ -77,6 +83,11 @@ function Start-RobocopyBackup {
 
     Write-Log "Starting Robocopy backup from '$Source' to '$Destination'" -Color Cyan
     Write-Log "Options: $($roboOptions -join ' ')" -Color Gray
+
+    if ($DryRun) {
+        $robocopyArgs += " /L" # List only mode
+        Write-Log "Dry run mode enabled. No files will be copied." -Color Yellow
+    }
 
     try {
         # Execute Robocopy
@@ -121,10 +132,12 @@ function Start-BackupByDestination {
         [object[]]$Destinations,
 
         [Parameter(Mandatory = $true)]
-        [string]$Target,
+        [object]$Target,
 
         [Parameter(Mandatory = $true)]
-        [string[]]$Options
+        [string[]]$Options,
+
+        [switch]$DryRun = $false
     )
 
     process {
@@ -134,9 +147,12 @@ function Start-BackupByDestination {
                     $destPath = Join-Path $destination.path $Target.destination
                     Write-Log "Backing up target: $($Target.description) to '$destPath'" -Color Cyan
 
-                    $success = Start-RobocopyBackup -Source $Target.source -Destination $destPath -Options $Options
+                    $success = Start-RobocopyBackup -Source $Target.source -Destination $destPath -Options $Options -DryRun:$DryRun
+
                     if ($success) {
                         Write-Log "Backup successful: $($Target.description) from $($Target.source) to $($destPath)" -Color Green
+                    } elseif ($DryRun) {
+                        Write-Log "Dry run completed for: $($Target.description) from $($Target.source) to $($destPath)" -Color Yellow
                     } else {
                         Write-Log "Backup failed: $($Target.description) from $($Target.source) to $($destPath)" -Color Red
                     }
@@ -192,11 +208,11 @@ foreach ($target in $config.static.targets) {
 
     # Process all local drive destinations
     $config.static.destinations.local_drives |
-        Start-BackupByDestination -Target $target -Options $robocopyOptions
+        Start-BackupByDestination -Target $target -Options $robocopyOptions -DryRun:$DryRun
 
     # Process all SMB share destinations
     $config.static.destinations.smb_shares |
-        Start-BackupByDestination -Target $target -Options $robocopyOptions
+        Start-BackupByDestination -Target $target -Options $robocopyOptions -DryRun:$DryRun
 
     Write-Log "Backup cycle completed for target: $($target.description)" -Color Magenta
     Write-Log "-------------------------------------------------" -Color Gray
