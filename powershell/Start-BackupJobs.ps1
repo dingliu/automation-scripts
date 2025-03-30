@@ -191,12 +191,13 @@ foreach ($target in $config.static.targets) {
     $robocopyOptions = $config.static.handlers.Robocopy.options
 
     # Process all local drive destinations
-    $config.static.destinations.local_drives |
-        Start-BackupByDestination -Target $target -Options $robocopyOptions
+    $config.static.destinations.local_drives | ForEach-Object {
+        Start-BackupByDestination -Target $target -Destinations $_ -Options $robocopyOptions}
+
 
     # Process all SMB share destinations
-    $config.static.destinations.smb_shares |
-        Start-BackupByDestination -Target $target -Options $robocopyOptions
+    $config.static.destinations.smb_shares | ForEach-Object {
+        Start-BackupByDestination -Target $target -Destinations $_ -Options $robocopyOptions}
 
     Write-Log "Backup cycle completed for target: $($target.description)" -Color Magenta
     Write-Log "-------------------------------------------------" -Color Gray
