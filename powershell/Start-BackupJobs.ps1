@@ -111,6 +111,43 @@ function Start-RobocopyBackup {
         return $false
     }
 }
+
+# Function to process backups by destination type
+function Start-BackupByDestination {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Destinations,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Target,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Options
+    )
+
+    process {
+        foreach ($destination in $Destinations) {
+            switch ($destination.handler) {
+                "Robocopy" {
+                    $destPath = Join-Path $destination.path $Target.destination
+                    Write-Log "Backing up target: $($Target.description) to '$destPath'" -Color Cyan
+
+                    $success = Start-RobocopyBackup -Source $Target.source -Destination $destPath -Options $Options
+                    if ($success) {
+                        Write-Log "Backup successful: $($Target.description) from $($Target.source) to $($destPath)" -Color Green
+                    } else {
+                        Write-Log "Backup failed: $($Target.description) from $($Target.source) to $($destPath)" -Color Red
+                    }
+                }
+                Default {
+                    Write-Log "Unknown handler $($destination.handler) for destination $($destination.description). Skipping..." -Color Red
+                }
+            }
+        }
+    }
+}
 #endregion Functions
 
 
@@ -151,33 +188,15 @@ Write-Log "Starting backup process..." -Color Magenta
 # Process the static.targets array
 foreach ($target in $config.static.targets) {
     Write-Log "Processing target: $($target.description)" -Color Yellow
-    $sourcePath = $target.source
-
-    # Local backup
-    $localDest = Join-Path $config.static.destinations.local.path $target.destination
     $robocopyOptions = $config.static.handlers.Robocopy.options
 
-    # Backup to local destination
-    $localSuccess = Start-RobocopyBackup -Source $sourcePath -Destination $localDest -Options $robocopyOptions
+    # Process all local drive destinations
+    $config.static.destinations.local_drives |
+        Start-BackupByDestination -Target $target -Options $robocopyOptions
 
-    # If local backup succeeded, proceed to SMB backup
-    if ($localSuccess) {
-        Write-Log "Local backup successful. Proceeding to SMB backup..." -Color Green
-
-        # SMB backup
-        $smbDest = Join-Path $config.static.destinations.smb.path $target.destination
-        $smbSuccess = Start-RobocopyBackup -Source $sourcePath -Destination $smbDest -Options $robocopyOptions
-
-        if ($smbSuccess) {
-            Write-Log "SMB backup successful for target: $($target.description)" -Color Green
-        }
-        else {
-            Write-Log "SMB backup failed for target: $($target.description)" -Color Red
-        }
-    }
-    else {
-        Write-Log "Local backup failed. Skipping SMB backup for target: $($target.description)" -Color Red
-    }
+    # Process all SMB share destinations
+    $config.static.destinations.smb_shares |
+        Start-BackupByDestination -Target $target -Options $robocopyOptions
 
     Write-Log "Backup cycle completed for target: $($target.description)" -Color Magenta
     Write-Log "-------------------------------------------------" -Color Gray
