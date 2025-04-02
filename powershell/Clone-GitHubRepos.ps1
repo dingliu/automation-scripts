@@ -75,46 +75,46 @@ function Invoke-RepositoryClone {
         [string]$BasePath
     )
 
-    $repoPath = Join-Path -Path $BasePath -ChildPath $RepoName
+    # Add .git to the target repository path
+    $repoPath = Join-Path -Path $BasePath -ChildPath "$RepoName.git"
 
     if (Test-Path -Path $repoPath) {
-        # Check if it's a directory
-        if (-not (Test-Path -Path $repoPath -PathType Container)) {
-            Write-Warning "Path '$repoPath' exists but is not a directory. Cannot clone repository."
-            return $null
-        }
-
-        # Check if it's a git repo
-        if (-not (Test-Path -Path "$repoPath\.git")) {
-            Write-Warning "Directory '$repoPath' exists but is not a git repository. Will clone to a different location."
-            $repoPath = Join-Path -Path $BasePath -ChildPath "$RepoName-$(Get-Random)"
-        }
-        else {
-            # Check if the origin remote matches the clone URL
+        # Check if it's a directory and a git repo
+        if ((Test-Path -Path $repoPath -PathType Container) -and (Test-Path -Path "$repoPath\config")) {
+            # Check if it's a mirror clone
             Push-Location $repoPath
             try {
-                $originUrl = (git config --get remote.origin.url) 2>$null
-                if ($originUrl -and ($originUrl -eq $CloneUrl)) {
-                    Write-Host "Repository '$RepoName' already exists at '$repoPath'. Skipping clone." -ForegroundColor Yellow
+                $isMirror = git config --get remote.origin.mirror 2>$null
+                $originUrl = git config --get remote.origin.url 2>$null
+
+                if ($isMirror -eq "true" -and $originUrl -eq $CloneUrl) {
+                    Write-Host "Mirror repository '$RepoName' already exists at '$repoPath'. Updating instead of cloning." -ForegroundColor Yellow
+                    Update-Repository -RepoPath $repoPath -RepoName $RepoName
                     return $repoPath
-                }
-                else {
-                    Write-Warning "Directory '$repoPath' is a git repository but origin URL doesn't match. Will clone to a different location."
-                    $repoPath = Join-Path -Path $BasePath -ChildPath "$RepoName-$(Get-Random)"
+                } else {
+                    Write-Host "Repository at '$repoPath' exists but is not a mirror of '$CloneUrl'. Removing and re-cloning." -ForegroundColor Yellow
+                    Pop-Location
+                    Remove-Item -Path $repoPath -Recurse -Force
                 }
             }
-            finally {
+            catch {
+                Write-Warning "Error checking repository status: $_"
                 Pop-Location
+                Remove-Item -Path $repoPath -Recurse -Force
             }
+        } else {
+            # Path exists but is not a proper git repository
+            Write-Host "Path '$repoPath' exists but is not a valid git repository. Removing and re-cloning." -ForegroundColor Yellow
+            Remove-Item -Path $repoPath -Recurse -Force
         }
     }
 
-
-    Write-Host "Cloning repository '$RepoName' to '$repoPath'..." -ForegroundColor Cyan
-    git clone $CloneUrl $repoPath
+    # Perform mirror clone
+    Write-Host "Mirror cloning repository '$RepoName' to '$repoPath'..." -ForegroundColor Cyan
+    git clone --mirror $CloneUrl $repoPath
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Failed to clone repository '$RepoName'."
+        Write-Warning "Failed to mirror clone repository '$RepoName'."
         return $null
     }
 
@@ -139,62 +139,11 @@ function Update-Repository {
 
         # Fetch all remote branches
         Write-Host "  Fetching all remote branches..." -ForegroundColor DarkCyan
-        git fetch --all
+        git fetch --prune --prune-tags origin
 
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "  Failed to fetch remote branches for '$RepoName'."
             return
-        }
-
-        # Get current branch
-        $currentBranch = git rev-parse --abbrev-ref HEAD
-
-        if ($LASTEXITCODE -ne 0 -or -not $currentBranch) {
-            Write-Warning "  Failed to determine current branch for '$RepoName'."
-            return
-        }
-
-        Write-Host "  Current branch: $currentBranch" -ForegroundColor DarkCyan
-
-        # Try to fast-forward the current branch
-        $remoteBranch = "origin/$currentBranch"
-
-        # Check if remote branch exists
-        $remoteBranchExists = git ls-remote --heads origin $currentBranch
-
-        if (-not $remoteBranchExists) {
-            Write-Host "  Remote branch '$remoteBranch' does not exist. Skipping update." -ForegroundColor Yellow
-            return
-        }
-
-        # Check if fast-forward is possible
-        $mergeBase = git merge-base HEAD $remoteBranch
-        $headCommit = git rev-parse HEAD
-        $remoteCommit = git rev-parse $remoteBranch
-
-        if ($headCommit -eq $remoteCommit) {
-            Write-Host "  Branch '$currentBranch' is already up to date." -ForegroundColor Green
-        }
-        elseif ($mergeBase -eq $headCommit) {
-            # Fast-forward is possible
-            Write-Host "  Fast-forwarding branch '$currentBranch'..." -ForegroundColor Green
-            git merge --ff-only $remoteBranch
-
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "  Failed to fast-forward branch '$currentBranch'."
-            }
-        }
-        else {
-            # Fast-forward is not possible, perform merge
-            Write-Host "  Fast-forward not possible for '$currentBranch'. Attempting merge..." -ForegroundColor Yellow
-            git merge $remoteBranch
-
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "  Merge conflicts detected in '$RepoName' on branch '$currentBranch'. Manual resolution required."
-            }
-            else {
-                Write-Host "  Successfully merged remote changes into '$currentBranch'." -ForegroundColor Green
-            }
         }
     }
     finally {
