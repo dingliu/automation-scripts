@@ -468,9 +468,9 @@ function Start-7zipBackup {
         Creates a 7zip archive from a source directory and saves it to a destination directory.
 
     .DESCRIPTION
-        This function creates a 7zip archive from the specified source directory and saves it to a subdirectory
-        within the destination directory. The subdirectory has the same name as the source directory.
-        The archive follows a naming convention of <source_directory_name>-daily-<yyyyMMdd>-<day_of_week>.7z.
+        This function creates a 7zip archive from the specified source directory and saves it to
+        the destination directory. The archive is first created in a temporary location and then
+        moved to the final destination, overwriting any existing archive with the same name.
         It supports various 7zip options passed as parameters and can operate in dry-run mode for testing.
 
     .PARAMETER Source
@@ -478,7 +478,6 @@ function Start-7zipBackup {
 
     .PARAMETER Destination
         The destination directory where the archive will be stored. Will have a trailing backslash added if missing.
-        The archive will be stored in a subdirectory with the same name as the source directory.
 
     .PARAMETER Options
         An array of 7zip command-line options to be used with the archiving operation.
@@ -489,7 +488,7 @@ function Start-7zipBackup {
     .EXAMPLE
         Start-7zipBackup -Source "C:\Data" -Destination "D:\Backup" -Options @("-mx=9", "-mmt=on")
 
-        Creates a 7zip archive of the C:\Data directory in D:\Backup\Data\ with maximum compression and multi-threading enabled.
+        Creates a 7zip archive of the C:\Data directory in D:\Backup with maximum compression and multi-threading enabled.
 
     .EXAMPLE
         Start-7zipBackup -Source "C:\Projects" -Destination "D:\Backup\Archives" -DryRun
@@ -502,7 +501,7 @@ function Start-7zipBackup {
 
     .NOTES
         This function requires 7zip to be installed and available in the system PATH.
-        The naming convention for archives is: <source_directory_name>-daily-<yyyyMMdd>-<day_of_week>.7z
+        The naming convention for archives is: <source_directory_name>.7z
     #>
     [CmdletBinding()]
     param (
@@ -532,46 +531,38 @@ function Start-7zipBackup {
         return $false
     }
 
-    # Get current date in required format
-    $currentDate = Get-Date
-    $dateFormat = $currentDate.ToString("yyyyMMdd")
-    $dayOfWeek = $currentDate.ToString("dddd").ToLower()
-
-    # Get source directory name for the archive name and subdirectory
+    # Get source directory name for the archive name
     $sourceDirName = Split-Path -Path $Source.TrimEnd('\') -Leaf
 
-    # Create subdirectory path with the same name as the source directory
-    $destinationSubDir = Join-Path -Path $Destination -ChildPath $sourceDirName
+    # Create archive file name using just the source directory name
+    $archiveFileName = "$sourceDirName.7z"
+    $archivePath = Join-Path -Path $Destination -ChildPath $archiveFileName
 
-    # Create the subdirectory if it doesn't exist
-    if (-not $DryRun) {
-        if (-not (Test-Path -Path $destinationSubDir)) {
-            Write-Log -Message "Creating destination subdirectory: $destinationSubDir" -Level Information
-            New-Item -ItemType Directory -Path $destinationSubDir -Force | Out-Null
-        }
-    } else {
-        Write-Log -Message "Dry run mode enabled. Would create directory: $destinationSubDir if it doesn't exist" -Level Warning
-    }
+    # Create a temporary directory for interim storage
+    $tempDir = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("7zip-temp-" + [Guid]::NewGuid().ToString())
+    $tempArchivePath = Join-Path -Path $tempDir -ChildPath $archiveFileName
 
-    # Create archive file name
-    $archiveFileName = "$sourceDirName-daily-$dateFormat-$dayOfWeek.7z"
-    $archivePath = Join-Path -Path $destinationSubDir -ChildPath $archiveFileName
-
-    Write-Log -Message "Starting 7zip backup from '$Source' to '$archivePath'" -Level Information
+    Write-Log -Message "Starting 7zip backup from '$Source' to '$archivePath' (via temporary location)" -Level Information
 
     if ($DryRun) {
         Write-Log -Message "Dry run mode enabled. No archive will be created." -Level Warning
-        Write-Log -Message "Would create 7zip archive: $archivePath" -Level Warning
+        Write-Log -Message "Would create temporary directory: $tempDir" -Level Warning
+        Write-Log -Message "Would create 7zip archive in temp location: $tempArchivePath" -Level Warning
+        Write-Log -Message "Would move archive to final destination: $archivePath" -Level Warning
         return $true
     }
 
     try {
+        # Create temporary directory
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        Write-Log -Message "Created temporary directory: $tempDir" -Level Verbose
+
         # Prepare 7zip command
         $sourceForArchive = $Source.TrimEnd('\') # Remove trailing backslash
         $sevenZipArgs = @("a")
 
-        # Add archive path
-        $sevenZipArgs += $archivePath
+        # Add temporary archive path
+        $sevenZipArgs += $tempArchivePath
 
         # Add source path with wildcard
         $sevenZipArgs += "$sourceForArchive\*"
@@ -583,11 +574,20 @@ function Start-7zipBackup {
         }
 
         # Execute 7zip
-        Write-Log -Message "Creating 7zip archive: $archivePath" -Level Information
+        Write-Log -Message "Creating 7zip archive in temporary location: $tempArchivePath" -Level Information
         $process = Start-Process -FilePath "7z" -ArgumentList $sevenZipArgs -NoNewWindow -Wait -PassThru
 
         if ($process.ExitCode -eq 0) {
-            Write-Log -Message "7zip archive created successfully: $archivePath" -Level Information
+            Write-Log -Message "7zip archive created successfully in temporary location: $tempArchivePath" -Level Information
+
+            # Ensure destination directory exists
+            New-DirectoryIfNotExists -Path $Destination -DryRun:$DryRun
+
+            # Move the archive to the destination, overwriting if it exists
+            Write-Log -Message "Moving archive to final destination: $archivePath" -Level Information
+            Move-Item -Path $tempArchivePath -Destination $archivePath -Force
+
+            Write-Log -Message "7zip archive moved successfully to: $archivePath" -Level Information
             return $true
         } else {
             Write-Log -Message "Failed to create 7zip archive. 7-Zip returned exit code: $($process.ExitCode)" -Level Error
@@ -597,6 +597,206 @@ function Start-7zipBackup {
     catch {
         Write-Log -Message "Failed to create 7zip archive: $_" -Level Error
         return $false
+    }
+    finally {
+        # Clean up temporary directory
+        if (Test-Path -Path $tempDir) {
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Log -Message "Removed temporary directory: $tempDir" -Level Verbose
+        }
+    }
+}
+
+function Start-MultiparBackup {
+    <#
+    .SYNOPSIS
+        Generates par2 files for files in a source directory and moves them to a destination directory.
+
+    .DESCRIPTION
+        This function uses the MultiPar tool to create par2 parity files for all files directly in the source directory.
+        It then moves both the original files and the generated par2 files to the destination directory.
+        The function supports dry run mode and various MultiPar options.
+
+    .PARAMETER Source
+        The source directory containing files to process. Will have a trailing backslash added if missing.
+
+    .PARAMETER Destination
+        The destination directory where files and par2 files will be moved. Will have a trailing backslash added if missing.
+        The directory will be created if it doesn't exist.
+
+    .PARAMETER Options
+        An array of MultiPar command-line options to be used with the operation.
+
+    .PARAMETER DryRun
+        When specified, simulates the operations without making actual changes.
+
+    .EXAMPLE
+        Start-MultiparBackup -Source "C:\Data" -Destination "D:\Backup\Archive" -Options @("/rk10", "/lc32")
+
+        Generates par2 files for all files in C:\Data with 10% recovery blocks and 32KB block size,
+        then moves all files to D:\Backup\Archive.
+
+    .EXAMPLE
+        Start-MultiparBackup -Source "C:\Documents" -Destination "D:\Backup\Docs" -DryRun
+
+        Simulates generating par2 files and moving files without performing actual operations.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if the operation was successful, $false otherwise.
+
+    .NOTES
+        This function requires MultiPar to be installed and available in the system PATH.
+        Only processes files directly in the source directory, not in subdirectories.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Options,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    # Ensure source and destination paths end with a backslash
+    if (-not $Source.EndsWith('\')) { $Source = "$Source\" }
+    if (-not $Destination.EndsWith('\')) { $Destination = "$Destination\" }
+
+    $multiparCommand = "par2j64" # Assuming MultiPar is installed as par2j64
+
+    # Check if multipar is installed
+    try {
+        $null = Get-Command -Name "$multiparCommand" -ErrorAction Stop
+    }
+    catch {
+        Write-Log -Message "MultiPar is not installed or not in the system PATH. Please install MultiPar and ensure it's in your PATH." -Level Error
+        return $false
+    }
+
+    # Get files only directly in the source directory (not in subdirectories)
+    $files = Get-ChildItem -Path $Source -File -Depth 0 | Where-Object { $_.Extension -ne '.par2' }
+
+    if ($files.Count -eq 0) {
+        Write-Log -Message "No files found in source directory: $Source" -Level Warning
+        return $true  # Return true as there was no error, just no files to process
+    }
+
+    Write-Log -Message "Found $($files.Count) files to process in $Source" -Level Information
+
+    # Create destination directory if it doesn't exist
+    if (-not (Test-Path -Path $Destination)) {
+        if ($DryRun) {
+            Write-Log -Message "Dry run mode enabled. Would create destination directory: $Destination" -Level Warning
+        }
+        else {
+            try {
+                Write-Log -Message "Creating destination directory: $Destination" -Level Information
+                New-DirectoryIfNotExists -Path $Destination -DryRun:$DryRun
+            }
+            catch {
+                Write-Log -Message "Failed to create destination directory: $_" -Level Error
+                return $false
+            }
+        }
+    }
+
+    # Create a temp working directory for par2 files
+    $tempDir = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("multipar-" + [Guid]::NewGuid().ToString())
+
+    if (-not $DryRun) {
+        try {
+            New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+            Write-Log -Message "Created temporary working directory: $tempDir" -Level Verbose
+        }
+        catch {
+            Write-Log -Message "Failed to create temporary directory: $_" -Level Error
+            return $false
+        }
+    }
+    else {
+        Write-Log -Message "Dry run mode enabled. Would create temporary directory: $tempDir" -Level Warning
+    }
+
+    try {
+        foreach ($file in $files) {
+            # For each file, create a par2 file
+            $baseFileName = $file.Name
+            $sourceFilePath = $file.FullName
+
+            # Prepare multipar command
+            $multiparArgs = @("c")
+
+            # Add output directory and name options
+            $nameWithoutExtension = [System.IO.Path]::GetFileNameWithoutExtension($baseFileName)
+            $outputOption = "/o:""$tempDir"""
+            $nameOption = "/n:""$nameWithoutExtension"""
+            $multiparArgs += $outputOption
+            $multiparArgs += $nameOption
+
+            # Add any user-specified options
+            if ($Options -and $Options.Count -gt 0) {
+                $multiparArgs += $Options
+                Write-Log -Message "Using MultiPar options: $($Options -join ' ')" -Level Information
+            }
+
+            # Add source file path (quoted to handle spaces)
+            $multiparArgs += """$sourceFilePath"""
+
+            if ($DryRun) {
+                Write-Log -Message "Dry run mode enabled. Would run: $multiparCommand $($multiparArgs -join ' ')" -Level Warning
+            }
+            else {
+                # Execute MultiPar to create par2 files
+                Write-Log -Message "Generating par2 files for: $baseFileName" -Level Information
+                $process = Start-Process -FilePath "$multiparCommand" -ArgumentList $multiparArgs -NoNewWindow -Wait -PassThru
+
+                if ($process.ExitCode -ne 0) {
+                    Write-Log -Message "MultiPar failed for file $baseFileName with exit code: $($process.ExitCode)" -Level Error
+                    continue
+                }
+            }
+        }
+
+        if ($DryRun) {
+            Write-Log -Message "Would move source files and generated par2 files to: $Destination" -Level Warning
+        }
+        else {
+            # Move original files to destination
+            foreach ($file in $files) {
+                $destinationFilePath = Join-Path -Path $Destination -ChildPath $file.Name
+                Move-Item -Path $file.FullName -Destination $destinationFilePath -Force
+                Write-Log -Message "Moved file: $($file.Name) to $Destination" -Level Verbose
+            }
+
+            # Move par2 files from temp directory to destination
+            $par2Files = Get-ChildItem -Path $tempDir -Filter "*.par2" -File
+            foreach ($par2File in $par2Files) {
+                $destinationPar2Path = Join-Path -Path $Destination -ChildPath $par2File.Name
+                Move-Item -Path $par2File.FullName -Destination $destinationPar2Path -Force
+                Write-Log -Message "Moved par2 file: $($par2File.Name) to $Destination" -Level Verbose
+            }
+
+            Write-Log -Message "Successfully created par2 files and moved all files to $Destination" -Level Information
+        }
+
+        return $true
+    }
+    catch {
+        Write-Log -Message "Failed to process files with MultiPar: $_" -Level Error
+        return $false
+    }
+    finally {
+        # Clean up temporary directory if it exists
+        if (-not $DryRun -and (Test-Path -Path $tempDir)) {
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Log -Message "Removed temporary directory: $tempDir" -Level Verbose
+        }
     }
 }
 
@@ -721,13 +921,72 @@ function Start-BackupByDestination {
                     }
                 }
                 "robocopy_7zip_multipar" {
-                    # Handles backup by following these steps:
-                    # 1. robocopy mirror target to a subdirectory in the cache directory
-                    # 2. create 7z archives in the destination directory from the cache directory
-                    # 3. create par2 files for the 7z archives
+                    # ============== Robocopy part =================
+                    # Robocopy mirror target to a subdirectory in the cache directory
+                    $robocopyOptions = $Handlers['robocopy'].options
+                    $robocopyDestPath = Join-Path $destination.cache_path $Target.destination
+                    Write-Log -Message "Backing up target: $($Target.description) to '$robocopyDestPath'" -Level Information
+
+                    $success = Start-RobocopyBackup -Source $Target.source -Destination $robocopyDestPath -Options $robocopyOptions -DryRun:$DryRun
+
+                    if ($success) {
+                        Write-Log -Message "Robocopy backup successful: $($Target.description) from $($Target.source) to $($robocopyDestPath)" -Level Information
+                    } elseif ($DryRun) {
+                        Write-Log -Message "Dry run completed for: $($Target.description) from $($Target.source) to $($robocopyDestPath)" -Level Warning
+                    } else {
+                        Write-Log -Message "Robocopy backup failed: $($Target.description) from $($Target.source) to $($robocopyDestPath)" -Level Error
+                    }
+
+                    # ============== 7zip part =================
+                    # Create 7z archives in the destination directory from the cache directory
+                    $sevenZipOptions = $Handlers['7zip'].options
+                    $sevenZipSource = $robocopyDestPath
+                    $sevenZipDestPath = $destination.cache_path
+                    # clear all the files directly under the destination directory
+                    Get-ChildItem -Path $Source -File -Depth 0 | ForEach-Object {
+                        Write-Log -Message "Removing file: $($_.FullName)" -Level Verbose
+                        Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+                        Write-Log -Message "Removed file: $($_.FullName)" -Level Verbose
+                    }
+                    Write-Log -Message "Backing up target: $($Target.description) to '$sevenZipDestPath'" -Level Information
+
+                    $success = Start-7zipBackup -Source $sevenZipSource -Destination $sevenZipDestPath -Options $sevenZipOptions -DryRun:$DryRun
+
+                    if ($success) {
+                        Write-Log -Message "7zip backup successful: $($Target.description) from $($Target.source) to $($sevenZipDestPath)" -Level Information
+                    } elseif ($DryRun) {
+                        Write-Log -Message "Dry run completed for: $($Target.description) from $($Target.source) to $($sevenZipDestPath)" -Level Warning
+                    } else {
+                        Write-Log -Message "7zip backup failed: $($Target.description) from $($Target.source) to $($sevenZipDestPath)" -Level Error
+                    }
+
+                    # ============== par2 file part =================
+                    # Create par2 files for the 7z archives
+                    $par2Options = $Handlers['multipar'].options
+                    $par2Source = $sevenZipDestPath
+                    $par2DestPath = $destination.cache_path
+                    Write-Log -Message "Backing up target: $($Target.description) to '$par2DestPath'" -Level Information
+
+                    $success = Start-MultiparBackup -Source $par2Source -Destination $par2DestPath -Options $par2Options -DryRun:$DryRun
+
+                    if ($success) {
+                        Write-Log -Message "Multipar backup successful: $($Target.description) from $($Target.source) to $($par2DestPath)" -Level Information
+                    } elseif ($DryRun) {
+                        Write-Log -Message "Dry run completed for: $($Target.description) from $($Target.source) to $($par2DestPath)" -Level Warning
+                    } else {
+                        Write-Log -Message "Multipar backup failed: $($Target.description) from $($Target.source) to $($par2DestPath)" -Level Error
+                    }
                     # 4. based on the defined promotion strategy
-                    #    a. promote the daily backup to the weekly backup
-                    #    b. check if the number of the daily backups exceeds the defined limit and delete the oldest daily backups that out of the limit
+                    #    a. check if the directory structure is present in the destination directory
+                    #       - E:\backup\continuous\
+                    #         - <source_directory_name>
+                    #           - daily
+                    #           - weekly
+                    #       if not, create the directory structure
+                    #    b. create a daily backup from the 7-zip archive and the par2 files in the cache directory
+                    #    c. check if there are any daily bakcup copies older than the day of the week in the previous week
+                    #       c.1 if there are, promote the latest daily backup among those to the weekly backup, if it's not already
+                    #    c. check if the number of the daily backups exceeds the defined limit and delete the oldest daily backups that out of the limit
                     #    d. check if the number of the weekly backups exceeds the defined limit and delete the oldest weekly backups that out of the limit
                 }
                 Default {
@@ -1405,7 +1664,6 @@ function Start-GitHubRepoBackupJob {
             Start-BackupByDestination -Target $target -Handlers $CodeRepoBackupConfig.handlers -DryRun:$DryRun
     }
 
-    # Handle git bundle destinations
     foreach ($target in $CodeRepoBackupConfig.targets) {
         Write-Log -Message "Start processing git bundle target: $($target.description)" -Level Information
 
@@ -1414,6 +1672,25 @@ function Start-GitHubRepoBackupJob {
             Start-BackupByDestination -Target $target -Handlers $CodeRepoBackupConfig.handlers -DryRun:$DryRun
     }
     Write-Log -Message "Backup cycle completed for target: $($target.description)" -Level Information
+}
+
+function Start-ContinuousBackupJob {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]$ContinuousBackupConfig,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    foreach ($target in $ContinuousBackupConfig.targets) {
+        Write-Log -Message "Start processing continuous backup target: $($target.description)" -Level Information
+
+        # Process all continuous backup destinations
+        $ContinuousBackupConfig.destinations.local_drives |
+            Start-BackupByDestination -Target $target -Handlers $ContinuousBackupConfig.handlers -DryRun:$DryRun
+    }
 }
 #endregion Functions
 
