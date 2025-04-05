@@ -1705,8 +1705,8 @@ if (-not (Test-EnvironmentVariable -Name $CONFIG_PATH_ENV_VAR_NAME)) {
 $config = Import-TomlConfig -ConfigPath "$([Environment]::GetEnvironmentVariable($CONFIG_PATH_ENV_VAR_NAME))"
 
 Start-GitHubRepoBackupJob -CodeRepoBackupConfig $config.code_repos -DryRun:$DryRun
-Start-StaticBackupJob -StaticBackupConfig $config.static -DryRun:$DryRun
 Start-ContinuousBackupJob -ContinuousBackupConfig $config.continuous -DryRun:$DryRun
+Start-StaticBackupJob -StaticBackupConfig $config.static -DryRun:$DryRun
 
 Write-Log -Message "All backup jobs completed." -Level Information
 #endregion Main
