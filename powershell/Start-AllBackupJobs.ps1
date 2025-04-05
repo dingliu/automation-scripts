@@ -582,6 +582,16 @@ function Start-BackupByDestination {
                         Write-Log -Message "Backup failed: $($Target.description) from $($Target.source) to $($destPath)" -Level Error
                     }
                 }
+                "robocopy_7zip_multipar" {
+                    # Handles backup by following these steps:
+                    # 1. robocopy mirror target to a subdirectory in the cache directory
+                    # 2. create 7z archives in the destination directory from the cache directory
+                    # 3. create par2 files for the 7z archives
+                    # 4. based on the defined promotion strategy
+                    #    a. promote the daily backup to the weekly backup
+                    #    b. check if the number of the daily backups exceeds the defined limit and delete the oldest daily backups that out of the limit
+                    #    d. check if the number of the weekly backups exceeds the defined limit and delete the oldest weekly backups that out of the limit
+                }
                 Default {
                     Write-Log -Message "Unknown handler $($destination.handler) for destination $($destination.description). Skipping..." -Level Error
                 }
