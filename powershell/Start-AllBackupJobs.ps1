@@ -462,6 +462,144 @@ function Start-RobocopyBackup {
     }
 }
 
+function Start-7zipBackup {
+    <#
+    .SYNOPSIS
+        Creates a 7zip archive from a source directory and saves it to a destination directory.
+
+    .DESCRIPTION
+        This function creates a 7zip archive from the specified source directory and saves it to a subdirectory
+        within the destination directory. The subdirectory has the same name as the source directory.
+        The archive follows a naming convention of <source_directory_name>-daily-<yyyyMMdd>-<day_of_week>.7z.
+        It supports various 7zip options passed as parameters and can operate in dry-run mode for testing.
+
+    .PARAMETER Source
+        The source directory to be archived. Will have a trailing backslash added if missing.
+
+    .PARAMETER Destination
+        The destination directory where the archive will be stored. Will have a trailing backslash added if missing.
+        The archive will be stored in a subdirectory with the same name as the source directory.
+
+    .PARAMETER Options
+        An array of 7zip command-line options to be used with the archiving operation.
+
+    .PARAMETER DryRun
+        When specified, simulates the operations without making actual changes.
+
+    .EXAMPLE
+        Start-7zipBackup -Source "C:\Data" -Destination "D:\Backup" -Options @("-mx=9", "-mmt=on")
+
+        Creates a 7zip archive of the C:\Data directory in D:\Backup\Data\ with maximum compression and multi-threading enabled.
+
+    .EXAMPLE
+        Start-7zipBackup -Source "C:\Projects" -Destination "D:\Backup\Archives" -DryRun
+
+        Simulates creating a 7zip archive without actually performing the operation.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if the archive was created successfully, $false otherwise.
+
+    .NOTES
+        This function requires 7zip to be installed and available in the system PATH.
+        The naming convention for archives is: <source_directory_name>-daily-<yyyyMMdd>-<day_of_week>.7z
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Options,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    # Ensure source and destination paths end with a backslash
+    if (-not $Source.EndsWith('\')) { $Source = "$Source\" }
+    if (-not $Destination.EndsWith('\')) { $Destination = "$Destination\" }
+
+    # Check if 7zip is installed
+    try {
+        $null = Get-Command -Name "7z" -ErrorAction Stop
+    }
+    catch {
+        Write-Log -Message "7-Zip is not installed or not in the system PATH. Please install 7-Zip and ensure it's in your PATH." -Level Error
+        return $false
+    }
+
+    # Get current date in required format
+    $currentDate = Get-Date
+    $dateFormat = $currentDate.ToString("yyyyMMdd")
+    $dayOfWeek = $currentDate.ToString("dddd").ToLower()
+
+    # Get source directory name for the archive name and subdirectory
+    $sourceDirName = Split-Path -Path $Source.TrimEnd('\') -Leaf
+
+    # Create subdirectory path with the same name as the source directory
+    $destinationSubDir = Join-Path -Path $Destination -ChildPath $sourceDirName
+
+    # Create the subdirectory if it doesn't exist
+    if (-not $DryRun) {
+        if (-not (Test-Path -Path $destinationSubDir)) {
+            Write-Log -Message "Creating destination subdirectory: $destinationSubDir" -Level Information
+            New-Item -ItemType Directory -Path $destinationSubDir -Force | Out-Null
+        }
+    } else {
+        Write-Log -Message "Dry run mode enabled. Would create directory: $destinationSubDir if it doesn't exist" -Level Warning
+    }
+
+    # Create archive file name
+    $archiveFileName = "$sourceDirName-daily-$dateFormat-$dayOfWeek.7z"
+    $archivePath = Join-Path -Path $destinationSubDir -ChildPath $archiveFileName
+
+    Write-Log -Message "Starting 7zip backup from '$Source' to '$archivePath'" -Level Information
+
+    if ($DryRun) {
+        Write-Log -Message "Dry run mode enabled. No archive will be created." -Level Warning
+        Write-Log -Message "Would create 7zip archive: $archivePath" -Level Warning
+        return $true
+    }
+
+    try {
+        # Prepare 7zip command
+        $sourceForArchive = $Source.TrimEnd('\') # Remove trailing backslash
+        $sevenZipArgs = @("a")
+
+        # Add archive path
+        $sevenZipArgs += $archivePath
+
+        # Add source path with wildcard
+        $sevenZipArgs += "$sourceForArchive\*"
+
+        # Add any user-specified options
+        if ($Options -and $Options.Count -gt 0) {
+            $sevenZipArgs += $Options
+            Write-Log -Message "Using 7zip options: $($Options -join ' ')" -Level Information
+        }
+
+        # Execute 7zip
+        Write-Log -Message "Creating 7zip archive: $archivePath" -Level Information
+        $process = Start-Process -FilePath "7z" -ArgumentList $sevenZipArgs -NoNewWindow -Wait -PassThru
+
+        if ($process.ExitCode -eq 0) {
+            Write-Log -Message "7zip archive created successfully: $archivePath" -Level Information
+            return $true
+        } else {
+            Write-Log -Message "Failed to create 7zip archive. 7-Zip returned exit code: $($process.ExitCode)" -Level Error
+            return $false
+        }
+    }
+    catch {
+        Write-Log -Message "Failed to create 7zip archive: $_" -Level Error
+        return $false
+    }
+}
+
 function Start-BackupByDestination {
     <#
     .SYNOPSIS
