@@ -1955,11 +1955,13 @@ function Invoke-RepoMirrorClone {
 function Update-Repository {
     <#
     .SYNOPSIS
-        Updates a Git repository by fetching all remote branches and tags.
+        Updates a Git repository by updating all remote branches and tags.
 
     .DESCRIPTION
-        This function updates a Git mirror repository by fetching all branches and tags
-        from the remote origin, including pruning any references that no longer exist.
+        This function updates a Git mirror repository by updating all branches and tags
+        from the remote(s), including pruning any references that no longer exist.
+        It uses the 'git remote update' command which is the recommended approach for
+        updating mirror repositories.
 
     .PARAMETER RepoPath
         The full path to the Git repository to update.
@@ -1968,25 +1970,18 @@ function Update-Repository {
         The name of the repository, used for logging purposes.
 
     .PARAMETER Remote
-        The name of the Git remote to fetch from. Defaults to 'origin'.
-
-    .PARAMETER All
-        When specified, fetches from all remotes instead of just the specified remote.
+        The name of the Git remote to update. When specified, only updates the named remote.
+        When not specified, updates all remotes.
 
     .EXAMPLE
         Update-Repository -RepoPath "D:\Backups\Repos\my-repo.git" -RepoName "my-repo"
 
-        Updates the Git repository at the specified path by fetching from the 'origin' remote.
+        Updates the Git repository at the specified path by updating all remotes.
 
     .EXAMPLE
         Update-Repository -RepoPath "D:\Backups\Repos\my-repo.git" -RepoName "my-repo" -Remote "upstream"
 
-        Updates the Git repository at the specified path by fetching from the 'upstream' remote.
-
-    .EXAMPLE
-        Update-Repository -RepoPath "D:\Backups\Repos\my-repo.git" -RepoName "my-repo" -All
-
-        Updates the Git repository at the specified path by fetching from all remotes.
+        Updates the Git repository at the specified path by updating only the 'upstream' remote.
 
     .OUTPUTS
         None
@@ -2013,10 +2008,7 @@ function Update-Repository {
 
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [string]$Remote = "origin",
-
-        [Parameter(Mandatory = $false)]
-        [switch]$All = $false
+        [string]$Remote
     )
 
     if (-not $RepoPath -or -not (Test-Path -Path $RepoPath)) {
@@ -2029,17 +2021,17 @@ function Update-Repository {
     try {
         Write-Log -Message "Updating repository '$RepoName'..." -Level Information
 
-        # Fetch all remote branches
-        if ($All) {
-            Write-Log -Message "Fetching all branches from all remotes for '$RepoName'..." -Level Verbose
-            git fetch --all --prune --prune-tags
+        # Update remote(s)
+        if ($Remote) {
+            Write-Log -Message "Updating remote '$Remote' for '$RepoName'..." -Level Verbose
+            git remote update --prune $Remote
         } else {
-            Write-Log -Message "Fetching all branches from remote '$Remote' for '$RepoName'..." -Level Verbose
-            git fetch --prune --prune-tags $Remote
+            Write-Log -Message "Updating all remotes for '$RepoName'..." -Level Verbose
+            git remote update --prune
         }
 
         if ($LASTEXITCODE -ne 0) {
-            Write-Log -Message "Failed to fetch remote branches for '$RepoName'." -Level Error
+            Write-Log -Message "Failed to update remote(s) for '$RepoName'." -Level Error
             return
         }
 
