@@ -462,6 +462,963 @@ function Start-RobocopyBackup {
     }
 }
 
+function Start-7zipBackup {
+    <#
+    .SYNOPSIS
+        Creates a 7zip archive from a source directory and saves it to a destination directory.
+
+    .DESCRIPTION
+        This function creates a 7zip archive from the specified source directory and saves it to
+        the destination directory. The archive is first created in a temporary location and then
+        moved to the final destination, overwriting any existing archive with the same name.
+        It supports various 7zip options passed as parameters and can operate in dry-run mode for testing.
+
+    .PARAMETER Source
+        The source directory to be archived. Will have a trailing backslash added if missing.
+
+    .PARAMETER Destination
+        The destination directory where the archive will be stored. Will have a trailing backslash added if missing.
+
+    .PARAMETER Options
+        An array of 7zip command-line options to be used with the archiving operation.
+
+    .PARAMETER DryRun
+        When specified, simulates the operations without making actual changes.
+
+    .EXAMPLE
+        Start-7zipBackup -Source "C:\Data" -Destination "D:\Backup" -Options @("-mx=9", "-mmt=on")
+
+        Creates a 7zip archive of the C:\Data directory in D:\Backup with maximum compression and multi-threading enabled.
+
+    .EXAMPLE
+        Start-7zipBackup -Source "C:\Projects" -Destination "D:\Backup\Archives" -DryRun
+
+        Simulates creating a 7zip archive without actually performing the operation.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if the archive was created successfully, $false otherwise.
+
+    .NOTES
+        This function requires 7zip to be installed and available in the system PATH.
+        The naming convention for archives is: <source_directory_name>.7z
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Options,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    # Ensure source and destination paths end with a backslash
+    if (-not $Source.EndsWith('\')) { $Source = "$Source\" }
+    if (-not $Destination.EndsWith('\')) { $Destination = "$Destination\" }
+
+    # Check if 7zip is installed
+    try {
+        $null = Get-Command -Name "7z" -ErrorAction Stop
+    }
+    catch {
+        Write-Log -Message "7-Zip is not installed or not in the system PATH. Please install 7-Zip and ensure it's in your PATH." -Level Error
+        return $false
+    }
+
+    # Get source directory name for the archive name
+    $sourceDirName = Split-Path -Path $Source.TrimEnd('\') -Leaf
+
+    # Create archive file name using just the source directory name
+    $archiveFileName = "$sourceDirName.7z"
+    $archivePath = Join-Path -Path $Destination -ChildPath $archiveFileName
+
+    # Create a temporary directory for interim storage
+    $tempDir = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("7zip-temp-" + [Guid]::NewGuid().ToString())
+    $tempArchivePath = Join-Path -Path $tempDir -ChildPath $archiveFileName
+
+    Write-Log -Message "Starting 7zip backup from '$Source' to '$archivePath' (via temporary location)" -Level Information
+
+    if ($DryRun) {
+        Write-Log -Message "Dry run mode enabled. No archive will be created." -Level Warning
+        Write-Log -Message "Would create temporary directory: $tempDir" -Level Warning
+        Write-Log -Message "Would create 7zip archive in temp location: $tempArchivePath" -Level Warning
+        Write-Log -Message "Would move archive to final destination: $archivePath" -Level Warning
+        return $true
+    }
+
+    try {
+        # Create temporary directory
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        Write-Log -Message "Created temporary directory: $tempDir" -Level Verbose
+
+        # Prepare 7zip command
+        $sourceForArchive = $Source.TrimEnd('\') # Remove trailing backslash
+        $sevenZipArgs = @("a")
+
+        # Add temporary archive path
+        $sevenZipArgs += "`"$tempArchivePath`""
+
+        # Add source path with wildcard
+        $sevenZipArgs += "`"$sourceForArchive\*`""
+
+        # Add any user-specified options
+        if ($Options -and $Options.Count -gt 0) {
+            $sevenZipArgs += $Options
+            Write-Log -Message "Using 7zip options: $($Options -join ' ')" -Level Information
+        }
+
+        # Execute 7zip
+        Write-Log -Message "Creating 7zip archive in temporary location: $tempArchivePath" -Level Information
+        $process = Start-Process -FilePath "7z" -ArgumentList $sevenZipArgs -NoNewWindow -Wait -PassThru
+
+        if ($process.ExitCode -eq 0) {
+            Write-Log -Message "7zip archive created successfully in temporary location: $tempArchivePath" -Level Information
+
+            # Ensure destination directory exists
+            New-DirectoryIfNotExists -Path $Destination -DryRun:$DryRun
+
+            # Move the archive(s) to the destination, handling both single and multi-volume archives
+            Write-Log -Message "Moving archive(s) to final destination..." -Level Information
+
+            # First, check if we have a multi-volume archive or a single file
+            $archiveFiles = Get-ChildItem -Path $tempDir -File | Where-Object {
+                $_.Name -like "$archiveFileName*" -or # Handle the base file
+                $_.Name -match "$([regex]::Escape($archiveFileName))\.\d{3}$" # Handle volume parts (.001, .002, etc.)
+            }
+
+            if ($archiveFiles.Count -eq 0) {
+                Write-Log -Message "No archive files found in temporary directory. Backup may have failed." -Level Error
+                return $false
+            }
+
+            foreach ($file in $archiveFiles) {
+                $destinationFile = Join-Path -Path $Destination -ChildPath $file.Name
+                Move-Item -Path $file.FullName -Destination $destinationFile -Force
+                Write-Log -Message "Moved archive file: $($file.Name) to $Destination" -Level Verbose
+            }
+
+            Write-Log -Message "7zip archive(s) moved successfully to: $Destination" -Level Information
+            return $true
+        } else {
+            Write-Log -Message "Failed to create 7zip archive. 7-Zip returned exit code: $($process.ExitCode)" -Level Error
+            return $false
+        }
+    }
+    catch {
+        Write-Log -Message "Failed to create 7zip archive: $_" -Level Error
+        return $false
+    }
+    finally {
+        # Clean up temporary directory
+        if (Test-Path -Path $tempDir) {
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Log -Message "Removed temporary directory: $tempDir" -Level Verbose
+        }
+    }
+}
+
+function Start-MultiparBackup {
+    <#
+    .SYNOPSIS
+        Generates par2 files for files in a source directory and moves them to a destination directory.
+
+    .DESCRIPTION
+        This function uses the MultiPar tool to create par2 parity files for all files directly in the source directory.
+        It then moves both the original files and the generated par2 files to the destination directory.
+        The function supports dry run mode and various MultiPar options.
+
+    .PARAMETER Source
+        The source directory containing files to process. Will have a trailing backslash added if missing.
+
+    .PARAMETER Destination
+        The destination directory where files and par2 files will be moved. Will have a trailing backslash added if missing.
+        The directory will be created if it doesn't exist.
+
+    .PARAMETER Options
+        An array of MultiPar command-line options to be used with the operation.
+
+    .PARAMETER DryRun
+        When specified, simulates the operations without making actual changes.
+
+    .EXAMPLE
+        Start-MultiparBackup -Source "C:\Data" -Destination "D:\Backup\Archive" -Options @("/rk10", "/lc32")
+
+        Generates par2 files for all files in C:\Data with 10% recovery blocks and 32KB block size,
+        then moves all files to D:\Backup\Archive.
+
+    .EXAMPLE
+        Start-MultiparBackup -Source "C:\Documents" -Destination "D:\Backup\Docs" -DryRun
+
+        Simulates generating par2 files and moving files without performing actual operations.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if the operation was successful, $false otherwise.
+
+    .NOTES
+        This function requires MultiPar to be installed and available in the system PATH.
+        Only processes files directly in the source directory, not in subdirectories.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Options,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    # Ensure source and destination paths end with a backslash
+    if (-not $Source.EndsWith('\')) { $Source = "$Source\" }
+    if (-not $Destination.EndsWith('\')) { $Destination = "$Destination\" }
+
+    $multiparCommand = "par2j64" # Assuming MultiPar is installed as par2j64
+
+    # Check if multipar is installed
+    try {
+        $null = Get-Command -Name "$multiparCommand" -ErrorAction Stop
+    }
+    catch {
+        Write-Log -Message "MultiPar is not installed or not in the system PATH. Please install MultiPar and ensure it's in your PATH." -Level Error
+        return $false
+    }
+
+    # Get files only directly in the source directory (not in subdirectories)
+    $files = Get-ChildItem -Path $Source -File -Depth 0 | Where-Object { $_.Extension -ne '.par2' }
+
+    if ($files.Count -eq 0) {
+        Write-Log -Message "No files found in source directory: $Source" -Level Warning
+        return $true  # Return true as there was no error, just no files to process
+    }
+
+    Write-Log -Message "Found $($files.Count) files to process in $Source" -Level Information
+
+    # Create destination directory if it doesn't exist
+    if (-not (Test-Path -Path $Destination)) {
+        if ($DryRun) {
+            Write-Log -Message "Dry run mode enabled. Would create destination directory: $Destination" -Level Warning
+        }
+        else {
+            try {
+                Write-Log -Message "Creating destination directory: $Destination" -Level Information
+                New-DirectoryIfNotExists -Path $Destination -DryRun:$DryRun
+            }
+            catch {
+                Write-Log -Message "Failed to create destination directory: $_" -Level Error
+                return $false
+            }
+        }
+    }
+
+    # Create a temp working directory for par2 files
+    $tempDir = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("multipar-" + [Guid]::NewGuid().ToString())
+
+    if (-not $DryRun) {
+        try {
+            New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+            Write-Log -Message "Created temporary working directory: $tempDir" -Level Verbose
+        }
+        catch {
+            Write-Log -Message "Failed to create temporary directory: $_" -Level Error
+            return $false
+        }
+    }
+    else {
+        Write-Log -Message "Dry run mode enabled. Would create temporary directory: $tempDir" -Level Warning
+    }
+
+    try {
+        foreach ($file in $files) {
+            # For each file, create a par2 file
+            $baseFileName = $file.Name
+            $sourceFilePath = $file.FullName
+
+            # Prepare multipar command
+            $multiparArgs = @("create")
+
+            # Add any user-specified options
+            if ($Options -and $Options.Count -gt 0) {
+                $multiparArgs += $Options
+                Write-Log -Message "Using MultiPar options: $($Options -join ' ')" -Level Information
+            }
+
+            # Add output filepath (quoted to handle spaces)
+            $par2Filename = "$baseFileName.par2"
+            $par2Filepath = Join-Path -Path $tempDir -ChildPath $par2Filename
+            $multiparArgs += "`"$par2Filepath`""
+
+            # Add source filepath (quoted to handle spaces)
+            $multiparArgs += "`"$sourceFilePath`""
+
+            if ($DryRun) {
+                Write-Log -Message "Dry run mode enabled. Would run: $multiparCommand $($multiparArgs -join ' ')" -Level Warning
+            }
+            else {
+                # Execute MultiPar to create par2 files
+                Write-Log -Message "Generating par2 files for: $baseFileName" -Level Information
+                $process = Start-Process -FilePath "$multiparCommand" -ArgumentList $multiparArgs -NoNewWindow -Wait -PassThru
+
+                if ($process.ExitCode -ne 0) {
+                    Write-Log -Message "MultiPar failed for file $baseFileName with exit code: $($process.ExitCode)" -Level Error
+                    continue
+                }
+            }
+        }
+
+        if ($DryRun) {
+            Write-Log -Message "Would move source files and generated par2 files to: $Destination" -Level Warning
+        }
+        else {
+            # Move original files to destination
+            foreach ($file in $files) {
+                $destinationFilePath = Join-Path -Path $Destination -ChildPath $file.Name
+                Move-Item -Path $file.FullName -Destination $destinationFilePath -Force
+                Write-Log -Message "Moved file: $($file.Name) to $Destination" -Level Verbose
+            }
+
+            # Move par2 files from temp directory to destination
+            $par2Files = Get-ChildItem -Path $tempDir -Filter "*.par2" -File
+            foreach ($par2File in $par2Files) {
+                $destinationPar2Path = Join-Path -Path $Destination -ChildPath $par2File.Name
+                Move-Item -Path $par2File.FullName -Destination $destinationPar2Path -Force
+                Write-Log -Message "Moved par2 file: $($par2File.Name) to $Destination" -Level Verbose
+            }
+
+            Write-Log -Message "Successfully created par2 files and moved all files to $Destination" -Level Information
+        }
+
+        return $true
+    }
+    catch {
+        Write-Log -Message "Failed to process files with MultiPar: $_" -Level Error
+        return $false
+    }
+    finally {
+        # Clean up temporary directory if it exists
+        if (-not $DryRun -and (Test-Path -Path $tempDir)) {
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Log -Message "Removed temporary directory: $tempDir" -Level Verbose
+        }
+    }
+}
+
+function Initialize-BackupDirectories {
+    <#
+    .SYNOPSIS
+        Creates the required directory structure for backup rotation.
+
+    .DESCRIPTION
+        This function creates the main destination directory and the subdirectories
+        for daily and weekly backups. It handles the DryRun mode by logging what
+        would happen instead of creating directories.
+
+    .PARAMETER Destination
+        The base destination directory where daily and weekly backup folders will be created.
+
+    .PARAMETER DryRun
+        When specified, simulates operations without making actual changes.
+
+    .EXAMPLE
+        Initialize-BackupDirectories -Destination "D:\Backups\Documents" -DryRun:$false
+
+        Creates the directory structure for backup rotation.
+
+    .OUTPUTS
+        System.Object
+        Returns an object with paths to daily and weekly backup folders.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Object])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    # Create daily and weekly backup paths
+    $dailyBackupPath = Join-Path -Path $Destination -ChildPath "daily"
+    $weeklyBackupPath = Join-Path -Path $Destination -ChildPath "weekly"
+
+    if ($DryRun) {
+        Write-Log -Message "DRY RUN: Would ensure destination directory exists: $Destination" -Level Warning
+        Write-Log -Message "DRY RUN: Would ensure daily backup directory exists: $dailyBackupPath" -Level Warning
+        Write-Log -Message "DRY RUN: Would ensure weekly backup directory exists: $weeklyBackupPath" -Level Warning
+    } else {
+        try {
+            New-DirectoryIfNotExists -Path $Destination -DryRun:$DryRun
+            New-DirectoryIfNotExists -Path $dailyBackupPath -DryRun:$DryRun
+            New-DirectoryIfNotExists -Path $weeklyBackupPath -DryRun:$DryRun
+        }
+        catch {
+            Write-Log -Message "Failed to create directory structure: $_" -Level Error
+            throw
+        }
+    }
+
+    return @{
+        DailyPath = $dailyBackupPath
+        WeeklyPath = $weeklyBackupPath
+    }
+}
+
+function Move-FilesToDailyBackup {
+    <#
+    .SYNOPSIS
+        Moves files from source to daily backup folder with date pattern.
+
+    .DESCRIPTION
+        This function processes files from the source directory, adds date patterns
+        to filenames, and moves them to the daily backup folder. Files are grouped
+        by their base name to maintain related files together.
+
+    .PARAMETER Source
+        The source directory containing files to be backed up.
+
+    .PARAMETER DailyBackupPath
+        The destination directory for daily backups.
+
+    .PARAMETER DryRun
+        When specified, simulates the operations without making actual changes.
+
+    .EXAMPLE
+        Move-FilesToDailyBackup -Source "D:\Cache" -DailyBackupPath "D:\Backups\Daily" -DryRun:$false
+
+        Moves files from cache directory to daily backup folder with date pattern.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if all operations completed successfully, $false otherwise.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DailyBackupPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    $operationSuccess = $true
+
+    # Get today's date information
+    $today = Get-Date
+    $currentDate = $today.ToString("yyyyMMdd")
+    $currentDayOfWeek = $today.DayOfWeek.ToString().ToLower()
+
+    # Daily backup suffix for file renaming
+    $dailyBackupSuffix = "-daily-$currentDate-$currentDayOfWeek"
+
+    # Get all files directly under the source directory
+    try {
+        $sourceFiles = Get-ChildItem -Path $Source -File -Depth 0
+    }
+    catch {
+        Write-Log -Message "Failed to get source files from ${Source}: $_" -Level Error
+        return $false
+    }
+
+    # Group files by their primary name part (before first dot)
+    $fileGroups = $sourceFiles | Group-Object {
+        if ($_.Name -match '^([^.]+)') {
+            $Matches[1]  # Extract everything before the first dot
+        } else {
+            $_.BaseName  # Fallback
+        }
+    }
+
+    foreach ($group in $fileGroups) {
+        $primaryName = $group.Name
+        $files = $group.Group
+
+        foreach ($file in $files) {
+            $fileName = $file.Name
+
+            # Skip files that already have a date pattern
+            if ($fileName -match "-daily-\d{8}-[a-z]+") {
+                Write-Log -Message "File $fileName already has a date pattern. Skipping renaming." -Level Warning
+                continue
+            }
+
+            # Split into primary and secondary parts
+            if ($fileName -match '^([^.]+)(.*)$') {
+                $primaryPart = $Matches[1]
+                $secondaryPart = $Matches[2]
+            } else {
+                $primaryPart = $fileName
+                $secondaryPart = ""
+            }
+
+            # Create new filename with date pattern
+            $newFileName = "$primaryPart$dailyBackupSuffix$secondaryPart"
+            $sourceFilePath = $file.FullName
+            $destFilePath = Join-Path -Path $DailyBackupPath -ChildPath $newFileName
+
+            if ($DryRun) {
+                Write-Log -Message "DRY RUN: Would rename and move file from $sourceFilePath to $destFilePath" -Level Warning
+            } else {
+                try {
+                    Write-Log -Message "Moving file from $sourceFilePath to $destFilePath" -Level Information
+                    Move-Item -Path $sourceFilePath -Destination $destFilePath -Force
+                } catch {
+                    Write-Log -Message "Failed to move file ${fileName}: $_" -Level Error
+                    $operationSuccess = $false
+                }
+            }
+        }
+    }
+
+    return $operationSuccess
+}
+
+function Get-DateInfoFromBackupFiles {
+    <#
+    .SYNOPSIS
+        Extracts date information from backup filenames.
+
+    .DESCRIPTION
+        This function extracts date and day of week information from backup filenames
+        with patterns like "-daily-YYYYMMDD-dayofweek" or "-weekly-YYYYMMDD-dayofweek".
+        It returns a collection of custom objects with date information.
+
+    .PARAMETER BackupFiles
+        A collection of file objects with names containing date patterns.
+
+    .PARAMETER Pattern
+        The regex pattern to extract date information from filenames.
+        Defaults to "-daily-(\d{8})-([a-z]+)" for daily backups.
+
+    .EXAMPLE
+        Get-DateInfoFromBackupFiles -BackupFiles $dailyBackups -Pattern "-daily-(\d{8})-([a-z]+)"
+
+        Extracts date information from daily backup files.
+
+    .OUTPUTS
+        System.Object[]
+        Returns an array of objects with date information extracted from filenames.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Object[]])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [System.IO.FileInfo[]]$BackupFiles,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Pattern = "-daily-(\d{8})-([a-z]+)"
+    )
+
+    # Use @() to ensure array output even when only one item is processed
+    $dateInfoCollection = @($BackupFiles | ForEach-Object {
+        if ($_.Name -match $Pattern) {
+            $dateStr = $Matches[1]
+            $weekDayStr = $Matches[2]
+            $backupDate = [DateTime]::ParseExact($dateStr, "yyyyMMdd", $null)
+
+            # Convert string day of week to integer (Monday = 1, Sunday = 7)
+            $weekDay = switch ($weekDayStr) {
+                "monday" { 1 }
+                "tuesday" { 2 }
+                "wednesday" { 3 }
+                "thursday" { 4 }
+                "friday" { 5 }
+                "saturday" { 6 }
+                "sunday" { 7 }
+                default { 0 }
+            }
+
+            # Return info object
+            [PSCustomObject]@{
+                Date = $backupDate
+                DateString = $dateStr
+                WeekDay = $weekDay
+                WeekDayString = $weekDayStr
+                FileName = $_.Name
+                FullPath = $_.FullName
+                BaseName = if ($_.Name -match '^([^-]*)') { $Matches[1] } else { $_.Name }
+            }
+        }
+    } | Sort-Object Date -Descending)
+
+    return $dateInfoCollection
+}
+
+function Invoke-WeeklyBackupPromotion {
+    <#
+    .SYNOPSIS
+        Promotes eligible daily backups to weekly backups.
+
+    .DESCRIPTION
+        This function identifies daily backups from the configured promotion day of the week
+        that are over one week old and promotes them to weekly backups by copying them to
+        the weekly backup folder with modified names.
+
+    .PARAMETER DailyBackupPath
+        The path to the daily backup folder.
+
+    .PARAMETER WeeklyBackupPath
+        The path to the weekly backup folder.
+
+    .PARAMETER PromotionDayOfWeek
+        The day of week (1-7) for promoting daily backups to weekly.
+
+    .PARAMETER DryRun
+        When specified, simulates operations without making actual changes.
+
+    .EXAMPLE
+        Invoke-WeeklyBackupPromotion -DailyBackupPath "D:\Backups\Daily" -WeeklyBackupPath "D:\Backups\Weekly" -PromotionDayOfWeek 1 -DryRun:$false
+
+        Promotes Monday daily backups older than one week to weekly backups.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if all operations completed successfully, $false otherwise.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$DailyBackupPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$WeeklyBackupPath,
+
+        [Parameter(Mandatory = $true)]
+        [int]$PromotionDayOfWeek,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    $operationSuccess = $true
+    $today = Get-Date
+    $oneWeekAgo = $today.AddDays(-7)
+
+    try {
+        # Get all files with daily backup pattern
+        $dailyBackups = Get-ChildItem -Path $DailyBackupPath -File |
+            Where-Object { $_.Name -match "-daily-(\d{8})-([a-z]+)" }
+
+        if ($dailyBackups.Count -eq 0) {
+            Write-Log -Message "No daily backups found for promotion." -Level Information
+            return $true
+        }
+
+        # Extract date information from daily backups
+        $dateInfoCollection = Get-DateInfoFromBackupFiles -BackupFiles $dailyBackups
+
+        # Group by base name for processing related files together
+        $groupedBackups = $dateInfoCollection | Group-Object BaseName
+
+        foreach ($group in $groupedBackups) {
+            $baseNamePattern = $group.Name
+            $backupFiles = $group.Group
+
+            # Find candidates for promotion (backups from target day of week older than one week)
+            $promotionCandidates = @($backupFiles | Where-Object {
+                $_.WeekDay -eq $PromotionDayOfWeek -and $_.Date -lt $oneWeekAgo
+            })
+
+            if ($promotionCandidates.Count -gt 0) {
+                # Get most recent candidate
+                $latestCandidate = $promotionCandidates[0]
+
+                # Check if this backup has already been promoted
+                $weeklyBackupPattern = "$baseNamePattern-weekly-$($latestCandidate.DateString)-$($latestCandidate.WeekDayString)*"
+                $existingWeeklyBackup = Get-ChildItem -Path $WeeklyBackupPath -File -Filter $weeklyBackupPattern
+
+                if ($existingWeeklyBackup.Count -eq 0) {
+                    # Get all files that are part of this backup set
+                    $candidateDate = $latestCandidate.DateString
+                    $candidateWeekDay = $latestCandidate.WeekDayString
+                    $filesToPromote = @($backupFiles | Where-Object {
+                        $_.DateString -eq $candidateDate -and $_.WeekDayString -eq $candidateWeekDay
+                    })
+
+                    # Promote each file
+                    foreach ($file in $filesToPromote) {
+                        $originalName = $file.FileName
+                        $promotedName = $originalName -replace "-daily-", "-weekly-"
+                        $sourcePath = $file.FullPath
+                        $destPath = Join-Path -Path $WeeklyBackupPath -ChildPath $promotedName
+
+                        if ($DryRun) {
+                            Write-Log -Message "DRY RUN: Would promote daily backup to weekly: copy from $sourcePath to $destPath" -Level Warning
+                        } else {
+                            try {
+                                Write-Log -Message "Promoting daily backup to weekly: $originalName -> $promotedName" -Level Information
+                                Copy-Item -Path $sourcePath -Destination $destPath -Force
+                            } catch {
+                                Write-Log -Message "Failed to promote backup ${originalName}: $_" -Level Error
+                                $operationSuccess = $false
+                            }
+                        }
+                    }
+                } else {
+                    Write-Log -Message "Backup set from $($latestCandidate.DateString) already promoted to weekly. Skipping promotion." -Level Information
+                }
+            } else {
+                Write-Log -Message "No candidates found for promotion to weekly backup for $baseNamePattern" -Level Information
+            }
+        }
+    }
+    catch {
+        Write-Log -Message "Error during backup promotion: $_" -Level Error
+        $operationSuccess = $false
+    }
+
+    return $operationSuccess
+}
+
+function Remove-OldBackups {
+    <#
+    .SYNOPSIS
+        Applies retention policies by removing old backups.
+
+    .DESCRIPTION
+        This function applies retention policies to daily or weekly backups by removing
+        backups that exceed the configured retention count. It preserves the most recent
+        backups and removes older ones.
+
+    .PARAMETER BackupPath
+        The path containing backup files to clean up.
+
+    .PARAMETER RetentionCount
+        The number of unique backup dates to retain.
+
+    .PARAMETER FilePattern
+        The regex pattern to identify the backup files (daily or weekly).
+
+    .PARAMETER BackupType
+        The type of backup (daily or weekly) for logging purposes.
+
+    .PARAMETER DryRun
+        When specified, simulates the removal without making actual changes.
+
+    .EXAMPLE
+        Remove-OldBackups -BackupPath "D:\Backups\Daily" -RetentionCount 7 -FilePattern "-daily-(\d{8})-" -BackupType "daily" -DryRun:$false
+
+        Applies retention policy to daily backups, keeping only the 7 most recent dates.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if all operations completed successfully, $false otherwise.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$BackupPath,
+
+        [Parameter(Mandatory = $true)]
+        [int]$RetentionCount,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FilePattern,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('daily', 'weekly')]
+        [string]$BackupType,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    if ($RetentionCount -le 0) {
+        Write-Log -Message "Retention count is zero or negative. Skipping cleanup for $BackupType backups." -Level Information
+        return $true
+    }
+
+    $operationSuccess = $true
+
+    try {
+        # Get all files matching the pattern
+        $backupFiles = Get-ChildItem -Path $BackupPath -File |
+            Where-Object { $_.Name -match $FilePattern }
+
+        if ($backupFiles.Count -eq 0) {
+            Write-Log -Message "No $BackupType backups found for cleanup." -Level Information
+            return $true
+        }
+
+        # Extract date information
+        $dateInfoCollection = Get-DateInfoFromBackupFiles -BackupFiles $backupFiles -Pattern $FilePattern
+
+        # Group by base name
+        $groupedBackups = $dateInfoCollection | Group-Object BaseName
+
+        foreach ($group in $groupedBackups) {
+            $backupFiles = $group.Group
+
+            # Get unique dates
+            $uniqueDates = $backupFiles | Select-Object -Property DateString, Date -Unique |
+                Sort-Object -Property Date -Descending
+
+            # Keep only the specified number of most recent backup dates
+            if ($uniqueDates.Count -gt $RetentionCount) {
+                $datesToRemove = @($uniqueDates | Select-Object -Skip $RetentionCount)
+
+                foreach ($dateInfo in $datesToRemove) {
+                    $filesToRemove = @($backupFiles | Where-Object { $_.DateString -eq $dateInfo.DateString })
+
+                    foreach ($file in $filesToRemove) {
+                        if ($DryRun) {
+                            Write-Log -Message "DRY RUN: Would remove old $BackupType backup: $($file.FullPath)" -Level Warning
+                        } else {
+                            try {
+                                Write-Log -Message "Removing old $BackupType backup: $($file.FileName)" -Level Information
+                                Remove-Item -Path $file.FullPath -Force
+                            } catch {
+                                Write-Log -Message "Failed to remove old $BackupType backup $($file.FileName): $_" -Level Error
+                                $operationSuccess = $false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        Write-Log -Message "Error during $BackupType backup cleanup: $_" -Level Error
+        $operationSuccess = $false
+    }
+
+    return $operationSuccess
+}
+
+function Start-BackupRotation {
+    <#
+    .SYNOPSIS
+        Implements a file backup rotation strategy with daily and weekly retention policies.
+
+    .DESCRIPTION
+        This function moves files from a source directory to daily and weekly backup folders
+        with a structured naming convention that includes date information. It implements a
+        backup rotation strategy with the following components:
+
+        1. Files are moved from source to a daily backup folder with date suffix added to filenames
+        2. Older daily backups are promoted to weekly backups based on configured day of week
+        3. Retention policies are applied to remove backups exceeding the configured counts
+
+        The function preserves filename structures while inserting date patterns before file extensions.
+        All operations can be simulated using the -DryRun parameter.
+
+    .PARAMETER Source
+        The source directory containing files to be backed up and rotated.
+        A trailing backslash will be added if missing.
+
+    .PARAMETER Destination
+        The base destination directory where daily and weekly backup folders will be created.
+        A trailing backslash will be added if missing.
+
+    .PARAMETER Options
+        A configuration object containing the following properties:
+        - number_of_daily_backups: Number of daily backups to retain (integer)
+        - number_of_weekly_backups: Number of weekly backups to retain (integer)
+        - day_of_week: Day of week (1-7) for promoting daily backups to weekly
+
+    .PARAMETER DryRun
+        When specified, simulates all operations without making actual changes.
+        All operations will be logged with a "DRY RUN:" prefix.
+
+    .EXAMPLE
+        $options = @{
+            number_of_daily_backups = 7
+            number_of_weekly_backups = 4
+            day_of_week = 1  # Monday
+        }
+        Start-BackupRotation -Source "E:\backup\continuous_cache\" -Destination "E:\backup\continuous\markdown-notes\" -Options $options
+
+        Moves files from cache directory to daily backup folder with date pattern, promotes
+        eligible Monday backups to weekly, and maintains 7 daily and 4 weekly backups.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if all operations completed successfully, $false if any errors occurred.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Options,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    # Track overall success
+    $operationSuccess = $true
+
+    # Ensure source and destination paths end with a backslash
+    if (-not $Source.EndsWith('\')) { $Source = "$Source\" }
+    if (-not $Destination.EndsWith('\')) { $Destination = "$Destination\" }
+
+    # Get configuration values
+    $numberOfDailyBackups = $Options.number_of_daily_backups
+    $numberOfWeeklyBackups = $Options.number_of_weekly_backups
+    $promotionDayOfWeek = $Options.day_of_week
+
+    Write-Log -Message "Starting backup rotation with retention policy: $numberOfDailyBackups daily and $numberOfWeeklyBackups weekly backups" -Level Information
+    Write-Log -Message "Weekly promotion day of week: $promotionDayOfWeek" -Level Information
+
+    try {
+        # Initialize directory structure
+        $paths = Initialize-BackupDirectories -Destination $Destination -DryRun:$DryRun
+        $dailyBackupPath = $paths.DailyPath
+        $weeklyBackupPath = $paths.WeeklyPath
+
+        # Move files from source to daily backup with date pattern
+        $moveSuccess = Move-FilesToDailyBackup -Source $Source -DailyBackupPath $dailyBackupPath -DryRun:$DryRun
+        $operationSuccess = $operationSuccess -and $moveSuccess
+
+        # Promote eligible daily backups to weekly
+        $promotionSuccess = Invoke-WeeklyBackupPromotion -DailyBackupPath $dailyBackupPath -WeeklyBackupPath $weeklyBackupPath -PromotionDayOfWeek $promotionDayOfWeek -DryRun:$DryRun
+        $operationSuccess = $operationSuccess -and $promotionSuccess
+
+        # Apply retention policy to daily backups
+        $dailyCleanupSuccess = Remove-OldBackups -BackupPath $dailyBackupPath -RetentionCount $numberOfDailyBackups -FilePattern "-daily-(\d{8})-" -BackupType "daily" -DryRun:$DryRun
+        $operationSuccess = $operationSuccess -and $dailyCleanupSuccess
+
+        # Apply retention policy to weekly backups
+        $weeklyCleanupSuccess = Remove-OldBackups -BackupPath $weeklyBackupPath -RetentionCount $numberOfWeeklyBackups -FilePattern "-weekly-(\d{8})-" -BackupType "weekly" -DryRun:$DryRun
+        $operationSuccess = $operationSuccess -and $weeklyCleanupSuccess
+    }
+    catch {
+        Write-Log -Message "Error during backup rotation: $_" -Level Error
+        $operationSuccess = $false
+    }
+
+    if ($operationSuccess) {
+        Write-Log -Message "Backup rotation completed successfully" -Level Information
+    } else {
+        Write-Log -Message "Backup rotation completed with errors" -Level Warning
+    }
+
+    return $operationSuccess
+}
+
 function Start-BackupByDestination {
     <#
     .SYNOPSIS
@@ -580,6 +1537,95 @@ function Start-BackupByDestination {
                         Write-Log -Message "Dry run completed for: $($Target.description) from $($Target.source) to $($destPath)" -Level Warning
                     } else {
                         Write-Log -Message "Backup failed: $($Target.description) from $($Target.source) to $($destPath)" -Level Error
+                    }
+                }
+                "robocopy_7zip_multipar" {
+                    # ============== Robocopy part =================
+                    # Robocopy mirror target to a subdirectory in the cache directory
+                    $robocopyOptions = $Handlers['robocopy'].options
+                    $robocopyDestPath = Join-Path $destination.cache_path $Target.destination
+                    Write-Log -Message "Backing up target: $($Target.description) to '$robocopyDestPath'" -Level Information
+
+                    $success = Start-RobocopyBackup -Source $Target.source -Destination $robocopyDestPath -Options $robocopyOptions -DryRun:$DryRun
+
+                    if ($success) {
+                        Write-Log -Message "Robocopy backup successful: $($Target.description) from $($Target.source) to $($robocopyDestPath)" -Level Information
+                    } elseif ($DryRun) {
+                        Write-Log -Message "Dry run completed for: $($Target.description) from $($Target.source) to $($robocopyDestPath)" -Level Warning
+                    } else {
+                        Write-Log -Message "Robocopy backup failed: $($Target.description) from $($Target.source) to $($robocopyDestPath)" -Level Error
+                    }
+
+                    # ============== 7zip part =================
+                    # Create 7z archives in the destination directory from the cache directory
+                    $sevenZipOptions = $Handlers['7zip'].options
+                    # Replace volume size placeholder if defined
+                    if ($Handlers['7zip'].volume_size) {
+                        $volumeSize = $Handlers['7zip'].volume_size
+                        $sevenZipOptions = $sevenZipOptions -replace '{volume_size}', $volumeSize
+                    }
+                    $sevenZipSource = $robocopyDestPath
+                    $sevenZipDestPath = $destination.cache_path
+                    # clear all the files directly under the destination directory
+                    Write-Log -Message "Clearing files in destination directory: $($sevenZipDestPath)" -Level Information
+                    Get-ChildItem -Path $sevenZipDestPath -File -Depth 0 | ForEach-Object {
+                        if ($DryRun) {
+                            Write-Log -Message "DRY RUN: Would remove file: $($_.FullName)" -Level Warning
+                        } else {
+                            Write-Log -Message "Removing file: $($_.FullName)" -Level Verbose
+                            Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+                            Write-Log -Message "Removed file: $($_.FullName)" -Level Verbose
+                        }
+                    }
+                    Write-Log -Message "Backing up target: $($Target.description) to '$sevenZipDestPath'" -Level Information
+
+                    $success = Start-7zipBackup -Source $sevenZipSource -Destination $sevenZipDestPath -Options $sevenZipOptions -DryRun:$DryRun
+
+                    if ($success) {
+                        Write-Log -Message "7zip backup successful: $($Target.description) from $($Target.source) to $($sevenZipDestPath)" -Level Information
+                    } elseif ($DryRun) {
+                        Write-Log -Message "Dry run completed for: $($Target.description) from $($Target.source) to $($sevenZipDestPath)" -Level Warning
+                    } else {
+                        Write-Log -Message "7zip backup failed: $($Target.description) from $($Target.source) to $($sevenZipDestPath)" -Level Error
+                    }
+
+                    # ============== par2 file part =================
+                    # Create par2 files for the 7z archives
+                    $par2Options = $Handlers['multipar'].options
+                    # Replace redundancy rate placeholder if defined
+                    if ($Handlers['multipar'].redundancy_rate_percent) {
+                        $redundancyRate = $Handlers['multipar'].redundancy_rate_percent
+                        $par2Options = $par2Options -replace '{redundancy_rate_percent}', $redundancyRate
+                    }
+                    $par2Source = $sevenZipDestPath
+                    $par2DestPath = $destination.cache_path
+                    Write-Log -Message "Backing up target: $($Target.description) to '$par2DestPath'" -Level Information
+
+                    $success = Start-MultiparBackup -Source $par2Source -Destination $par2DestPath -Options $par2Options -DryRun:$DryRun
+
+                    if ($success) {
+                        Write-Log -Message "Multipar backup successful: $($Target.description) from $($Target.source) to $($par2DestPath)" -Level Information
+                    } elseif ($DryRun) {
+                        Write-Log -Message "Dry run completed for: $($Target.description) from $($Target.source) to $($par2DestPath)" -Level Warning
+                    } else {
+                        Write-Log -Message "Multipar backup failed: $($Target.description) from $($Target.source) to $($par2DestPath)" -Level Error
+                    }
+
+                    # ============== rotation part =================
+                    # Based on the defined promotion strategy
+                    $rotationOptions = $Target.strategy
+                    $rotationSource = $destination.cache_path
+                    $rotationDestPath = Join-Path $destination.path $Target.destination
+                    Write-Log -Message "Backing up target: $($Target.description) to '$rotationDestPath'" -Level Information
+
+                    $success = Start-BackupRotation -Source $rotationSource -Destination $rotationDestPath -Options $rotationOptions -DryRun:$DryRun
+
+                    if ($success) {
+                        Write-Log -Message "Backup rotation successful: $($Target.description) from $($Target.source) to $($rotationDestPath)" -Level Information
+                    } elseif ($DryRun) {
+                        Write-Log -Message "Dry run completed for: $($Target.description) from $($Target.source) to $($rotationDestPath)" -Level Warning
+                    } else {
+                        Write-Log -Message "Backup rotation failed: $($Target.description) from $($Target.source) to $($rotationDestPath)" -Level Error
                     }
                 }
                 Default {
@@ -896,7 +1942,7 @@ function Invoke-RepoMirrorClone {
     }
 
     Write-Log -Message "Mirror cloning repository '$RepoName' to '$repoPath'..." -Level Information
-    git clone --mirror $CloneUrl $repoPath
+    git clone --mirror $CloneUrl "`"$repoPath`""
 
     if ($LASTEXITCODE -ne 0) {
         Write-Log -Message "Failed to mirror clone repository '$RepoName'." -Level Error
@@ -1257,7 +2303,6 @@ function Start-GitHubRepoBackupJob {
             Start-BackupByDestination -Target $target -Handlers $CodeRepoBackupConfig.handlers -DryRun:$DryRun
     }
 
-    # Handle git bundle destinations
     foreach ($target in $CodeRepoBackupConfig.targets) {
         Write-Log -Message "Start processing git bundle target: $($target.description)" -Level Information
 
@@ -1266,6 +2311,36 @@ function Start-GitHubRepoBackupJob {
             Start-BackupByDestination -Target $target -Handlers $CodeRepoBackupConfig.handlers -DryRun:$DryRun
     }
     Write-Log -Message "Backup cycle completed for target: $($target.description)" -Level Information
+}
+
+function Start-ContinuousBackupJob {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [object]$ContinuousBackupConfig,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    foreach ($target in $ContinuousBackupConfig.targets) {
+        Write-Log -Message "Start processing continuous backup target: $($target.description)" -Level Information
+
+        # Process all continuous backup destinations
+        $ContinuousBackupConfig.destinations.local_drives |
+            Start-BackupByDestination -Target $target -Handlers $ContinuousBackupConfig.handlers -DryRun:$DryRun
+    }
+    # After all individual targets are processed, mirror local drives to SMB shares
+    $robocopyOptions = $ContinuousBackupConfig.handlers.robocopy.options
+
+    # Process all SMB share destinations
+    foreach ($smb_share in $ContinuousBackupConfig.destinations.smb_shares) {
+        Write-Log -Message "Start processing SMB share target: $($smb_share.description)" -Level Information
+        $robocopySource = $smb_share.source
+        $robocopyDestPath = $smb_share.path
+        Start-RobocopyBackup -Source $robocopySource -Destination $robocopyDestPath -Options $robocopyOptions -DryRun:$DryRun
+        Write-Log -Message "Backup cycle completed for target: $($smb_share.description)" -Level Information
+    }
 }
 #endregion Functions
 
@@ -1280,6 +2355,7 @@ if (-not (Test-EnvironmentVariable -Name $CONFIG_PATH_ENV_VAR_NAME)) {
 $config = Import-TomlConfig -ConfigPath "$([Environment]::GetEnvironmentVariable($CONFIG_PATH_ENV_VAR_NAME))"
 
 Start-GitHubRepoBackupJob -CodeRepoBackupConfig $config.code_repos -DryRun:$DryRun
+Start-ContinuousBackupJob -ContinuousBackupConfig $config.continuous -DryRun:$DryRun
 Start-StaticBackupJob -StaticBackupConfig $config.static -DryRun:$DryRun
 
 Write-Log -Message "All backup jobs completed." -Level Information
