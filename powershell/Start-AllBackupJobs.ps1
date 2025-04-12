@@ -2396,14 +2396,30 @@ function Start-MirrorCloneBackup {
         New-DirectoryIfNotExists -Path $Destination -DryRun:$DryRun
 
         Write-Log -Message "Fetching all non-archived repositories for current GitHub user..." -Level Information
-        $repos = gh repo list --json name,url,isArchived --limit 1000 | ConvertFrom-Json | Where-Object { -not $_.isArchived }
+        $repos = @(gh repo list --json name,owner,url,isArchived --limit 1000 | ConvertFrom-Json | Where-Object { -not $_.isArchived })
 
         if (-not $repos -or $repos.Count -eq 0) {
-            Write-Log -Message "No repositories found for the current GitHub user." -Level Warning
+            Write-Log -Message "No non-archived repository found for the current GitHub user." -Level Warning
             return $false
         }
 
         Write-Log -Message "Found $($repos.Count) repositories to process." -Level Information
+
+        Write-Log -Message "Adding numeric IDs to repositories..." -Level Information
+        foreach ($repo in $repos) {
+            $repoOwnerAndName = $repo.url -replace "^https?://([^/]+)/", "" -replace "\.git$", ""
+            try {
+                $repoId = gh api "repos/$repoOwnerAndName" --jq .id 2>$null
+                if ($repoId) {
+                    $repo | Add-Member -MemberType NoteProperty -Name "id" -Value $repoId -Force
+                    Write-Log -Message "Added ID $repoId to repository $($repo.name)" -Level Verbose
+                } else {
+                    Write-Log -Message "Could not retrieve ID for repository $($repo.name)" -Level Warning
+                }
+            } catch {
+                Write-Log -Message "Error retrieving ID for repository $($repo.name): $_" -Level Warning
+            }
+        }
 
         # Clone or update each repository
         foreach ($repo in $repos) {
@@ -2412,7 +2428,7 @@ function Start-MirrorCloneBackup {
             }
 
             Write-Log -Message "Processing repository: $($repo.name)" -Level Verbose
-            $repoPath = Invoke-RepoMirrorClone -RepoName $repo.name -CloneUrl $repo.url -BasePath $Destination -DryRun:$DryRun
+            $repoPath = Invoke-RepoMirrorClone -NumericRepoID $repo.id -RepoName $repo.name -CloneUrl $repo.url -BasePath $Destination -DryRun:$DryRun
 
             if (-not $repoPath) {
                 Write-Log -Message "Failed to process repository: $($repo.name)" -Level Warning
