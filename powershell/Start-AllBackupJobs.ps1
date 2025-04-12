@@ -2060,7 +2060,7 @@ function New-GitMirrorClone {
     }
 
     Write-Log -Message "Mirror cloning repository '$RepoName' to '$TargetPath'..." -Level Information
-    git clone --mirror $CloneUrl "`"$TargetPath`""
+    git clone --mirror $CloneUrl "$TargetPath"
 
     if ($LASTEXITCODE -ne 0) {
         Write-Log -Message "Failed to mirror clone repository '$RepoName'." -Level Error
