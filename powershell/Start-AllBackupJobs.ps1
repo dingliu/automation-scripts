@@ -1788,6 +1788,289 @@ function Test-GitHubLogin {
     }
 }
 
+function Test-GitMirrorRepository {
+    <#
+    .SYNOPSIS
+        Tests if a repository is a valid git mirror with the expected remote URL.
+
+    .DESCRIPTION
+        This function checks if the specified path contains a valid git mirror repository
+        with the expected remote URL.
+
+    .PARAMETER RepoPath
+        The full path to the repository directory.
+
+    .PARAMETER ExpectedUrl
+        The expected remote URL for the repository.
+
+    .OUTPUTS
+        System.Boolean
+        Returns $true if the repository is a valid mirror with the expected URL, $false otherwise.
+
+    .EXAMPLE
+        Test-GitMirrorRepository -RepoPath "D:\Repos\123456,my-repo.git" -ExpectedUrl "https://github.com/user/my-repo.git"
+
+        Tests if the repository at the specified path is a valid mirror with the expected URL.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$RepoPath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ExpectedUrl
+    )
+
+    $isValid = $false
+
+    if (-not (Test-Path -Path $RepoPath -PathType Container) -or
+        -not (Test-Path -Path "$RepoPath\config")) {
+        return $false
+    }
+
+    Push-Location $RepoPath
+    try {
+        $isMirror = git config --get remote.origin.mirror 2>$null
+        $originUrl = git config --get remote.origin.url 2>$null
+
+        if ($isMirror -eq "true" -and $originUrl -eq $ExpectedUrl) {
+            $isValid = $true
+        }
+    }
+    catch {
+        $isValid = $false
+    }
+    finally {
+        Pop-Location
+    }
+
+    return $isValid
+}
+
+function Find-ExistingRepositoryByID {
+    <#
+    .SYNOPSIS
+        Finds an existing repository with the specified numeric ID.
+
+    .DESCRIPTION
+        This function searches for an existing repository in the specified base path
+        that matches the given numeric ID using the naming convention <NUMERIC_ID>,<NAME>.git.
+
+    .PARAMETER BasePath
+        The base directory to search for repositories.
+
+    .PARAMETER NumericRepoID
+        The numeric ID of the repository to find.
+
+    .OUTPUTS
+        System.String
+        Returns the full path to the found repository, or $null if no matching repository is found.
+
+    .EXAMPLE
+        Find-ExistingRepositoryByID -BasePath "D:\Repos" -NumericRepoID "123456"
+
+        Searches for a repository with numeric ID 123456 in the specified directory.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$BasePath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$NumericRepoID
+    )
+
+    $existingRepoPath = $null
+    $existingRepoName = $null
+    $existingDirs = Get-ChildItem -Path $BasePath -Directory
+
+    foreach ($dir in $existingDirs) {
+        if ($dir.Name -match "^$NumericRepoID,(.+)\.git$") {
+            $existingRepoPath = $dir.FullName
+            $existingRepoName = $Matches[1]
+            break
+        }
+    }
+
+    if ($existingRepoPath) {
+        return @{
+            Path = $existingRepoPath
+            Name = $existingRepoName
+        }
+    }
+    else {
+        return $null
+    }
+}
+
+function Remove-InvalidRepository {
+    <#
+    .SYNOPSIS
+        Removes an invalid repository.
+
+    .DESCRIPTION
+        This function removes an invalid repository directory. If DryRun is specified,
+        it only logs the action without making actual changes.
+
+    .PARAMETER RepoPath
+        The full path to the repository to remove.
+
+    .PARAMETER DryRun
+        When specified, simulates the operation without making actual changes.
+
+    .EXAMPLE
+        Remove-InvalidRepository -RepoPath "D:\Repos\123456,my-repo.git" -DryRun:$false
+
+        Removes the specified repository directory.
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$RepoPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    if ($DryRun) {
+        Write-Log -Message "DRY RUN: Would remove invalid repository at '$RepoPath'" -Level Warning
+    }
+    else {
+        Write-Log -Message "Removing invalid repository at '$RepoPath'..." -Level Warning
+        Remove-Item -Path $RepoPath -Recurse -Force
+        Write-Log -Message "Repository at '$RepoPath' removed." -Level Information
+    }
+}
+
+function Rename-GitMirrorRepository {
+    <#
+    .SYNOPSIS
+        Renames a Git mirror repository directory.
+
+    .DESCRIPTION
+        This function renames a Git mirror repository directory to match a new name,
+        following the naming convention <NUMERIC_ID>,<NAME>.git. If DryRun is specified,
+        it only logs the action without making actual changes.
+
+    .PARAMETER SourcePath
+        The full path to the source repository.
+
+    .PARAMETER TargetPath
+        The full path to the target repository location.
+
+    .PARAMETER DryRun
+        When specified, simulates the operation without making actual changes.
+
+    .OUTPUTS
+        System.String
+        Returns the new path of the repository.
+
+    .EXAMPLE
+        Rename-GitMirrorRepository -SourcePath "D:\Repos\123456,old-name.git" -TargetPath "D:\Repos\123456,new-name.git" -DryRun:$false
+
+        Renames the repository directory from the old name to the new name.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$TargetPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    if ($DryRun) {
+        Write-Log -Message "DRY RUN: Would rename directory from '$SourcePath' to '$TargetPath'" -Level Warning
+        return $TargetPath
+    }
+    else {
+        Write-Log -Message "Renaming directory from '$SourcePath' to '$TargetPath'..." -Level Information
+        Rename-Item -Path $SourcePath -NewName (Split-Path -Leaf $TargetPath)
+        Write-Log -Message "Directory renamed successfully." -Level Information
+        return $TargetPath
+    }
+}
+
+function New-GitMirrorClone {
+    <#
+    .SYNOPSIS
+        Creates a new Git mirror clone.
+
+    .DESCRIPTION
+        This function creates a new Git mirror clone of a repository. If DryRun is specified,
+        it only logs the action without making actual changes.
+
+    .PARAMETER RepoName
+        The name of the repository to clone.
+
+    .PARAMETER CloneUrl
+        The URL of the Git repository to clone.
+
+    .PARAMETER TargetPath
+        The full path where the repository will be cloned.
+
+    .PARAMETER DryRun
+        When specified, simulates the operation without making actual changes.
+
+    .OUTPUTS
+        System.String
+        Returns the path to the cloned repository, or $null if the clone operation failed.
+        In dry-run mode, returns the path that would be used.
+
+    .EXAMPLE
+        New-GitMirrorClone -RepoName "my-repo" -CloneUrl "https://github.com/user/my-repo.git" -TargetPath "D:\Repos\123456,my-repo.git" -DryRun:$false
+
+        Creates a mirror clone of the repository at the specified path.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$RepoName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$CloneUrl,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$TargetPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$DryRun = $false
+    )
+
+    if ($DryRun) {
+        Write-Log -Message "DRY RUN: Would mirror clone repository '$RepoName' to '$TargetPath'" -Level Warning
+        return $TargetPath
+    }
+
+    Write-Log -Message "Mirror cloning repository '$RepoName' to '$TargetPath'..." -Level Information
+    git clone --mirror $CloneUrl "$TargetPath"
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log -Message "Failed to mirror clone repository '$RepoName'." -Level Error
+        return $null
+    }
+
+    Write-Log -Message "Repository '$RepoName' mirror cloned successfully." -Level Information
+    return $TargetPath
+}
+
 function Invoke-RepoMirrorClone {
     <#
     .SYNOPSIS
@@ -1799,9 +2082,17 @@ function Invoke-RepoMirrorClone {
         either updates it or re-clones it as needed. When running in dry-run mode,
         it simulates the operations without making actual changes.
 
+        The function uses a naming convention of <NUMERIC_ID>,<GIT_REPO_NAME>.git for the
+        repository directory and handles scenarios where repositories have been renamed
+        in GitHub.
+
     .PARAMETER RepoName
         The name of the repository to clone.
         Must contain only letters, numbers, underscores, hyphens, and periods.
+
+    .PARAMETER NumericRepoID
+        The numeric ID of the GitHub repository.
+        Must contain only numeric characters.
 
     .PARAMETER CloneUrl
         The URL of the Git repository to clone.
@@ -1816,12 +2107,12 @@ function Invoke-RepoMirrorClone {
         All operations will be logged with a "DRY RUN:" prefix at Warning level.
 
     .EXAMPLE
-        Invoke-RepoMirrorClone -RepoName "my-repo" -CloneUrl "https://github.com/user/my-repo.git" -BasePath "D:\Backups\Repos"
+        Invoke-RepoMirrorClone -RepoName "my-repo" -NumericRepoID "123456" -CloneUrl "https://github.com/user/my-repo.git" -BasePath "D:\Backups\Repos"
 
-        Creates or updates a mirror clone of the repository at D:\Backups\Repos\my-repo.git
+        Creates or updates a mirror clone of the repository at D:\Backups\Repos\123456,my-repo.git
 
     .EXAMPLE
-        Invoke-RepoMirrorClone -RepoName "my-repo" -CloneUrl "https://github.com/user/my-repo.git" -BasePath "D:\Backups\Repos" -DryRun
+        Invoke-RepoMirrorClone -RepoName "my-repo" -NumericRepoID "123456" -CloneUrl "https://github.com/user/my-repo.git" -BasePath "D:\Backups\Repos" -DryRun
 
         Simulates the mirror clone operation without making any actual changes.
 
@@ -1831,12 +2122,14 @@ function Invoke-RepoMirrorClone {
         In dry-run mode, returns the path that would be used.
 
     .NOTES
-        - The function adds '.git' extension to the repository folder automatically
+        - The function uses naming convention <NUMERIC_ID>,<GIT_REPO_NAME>.git for repository folders
+        - Handles scenarios where repositories have been renamed in GitHub
         - Requires Git to be installed and available in the system PATH
         - In dry-run mode, no filesystem changes or git operations are performed
         - Uses Write-Log for operation logging with appropriate severity levels
     #>
     [CmdletBinding()]
+    [OutputType([string])]
     param (
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
@@ -1851,6 +2144,20 @@ function Invoke-RepoMirrorClone {
             return $true
         })]
         [string]$RepoName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [ValidateScript({
+            if ([string]::IsNullOrWhiteSpace($_)) {
+                throw "The NumericRepoID parameter cannot be empty or contain only whitespace characters."
+            }
+            # Validate numeric ID format (numbers only)
+            if (-not ($_ -match '^\d+$')) {
+                throw "The NumericRepoID parameter must contain only numeric characters."
+            }
+            return $true
+        })]
+        [string]$NumericRepoID,
 
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
@@ -1884,82 +2191,72 @@ function Invoke-RepoMirrorClone {
         [switch]$DryRun = $false
     )
 
-    # Add .git to the target repository path
-    $repoPath = Join-Path -Path $BasePath -ChildPath "$RepoName.git"
+    # Format the target repository path with the new naming convention
+    $targetRepoPath = Join-Path -Path $BasePath -ChildPath "$NumericRepoID,$RepoName.git"
 
-    if (Test-Path -Path $repoPath) {
-        # Check if it's a directory and a git repo
-        if ((Test-Path -Path $repoPath -PathType Container) -and (Test-Path -Path "$repoPath\config")) {
-            # Check if it's a mirror clone
-            Push-Location $repoPath
-            try {
-                $isMirror = git config --get remote.origin.mirror 2>$null
-                $originUrl = git config --get remote.origin.url 2>$null
+    # Check if there's an existing directory with the same NumericRepoID but different name
+    $existingRepo = Find-ExistingRepositoryByID -BasePath $BasePath -NumericRepoID $NumericRepoID
 
-                if ($isMirror -eq "true" -and $originUrl -eq $CloneUrl) {
-                    if ($DryRun) {
-                        Write-Log -Message "DRY RUN: Would update existing mirror repository '$RepoName' at '$repoPath'" -Level Warning
-                        Pop-Location
-                        return $repoPath
-                    }
-                    Write-Log -Message "Mirror repository '$RepoName' already exists at '$repoPath'. Updating instead of cloning." -Level Information
-                    Update-Repository -RepoPath $repoPath -RepoName $RepoName
-                    return $repoPath
-                } else {
-                    Write-Log -Message "Repository at '$repoPath' exists but is not a mirror of '$CloneUrl'. Removing and re-cloning." -Level Warning
-                    Pop-Location
-                    if (-not $DryRun) {
-                        Remove-Item -Path $repoPath -Recurse -Force
-                    } else {
-                        Write-Log -Message "DRY RUN: Would remove non-mirror repository at '$repoPath'" -Level Warning
-                    }
-                }
-            }
-            catch {
-                Write-Log -Message "Error checking repository status: $_" -Level Warning
-                Pop-Location
-                if (-not $DryRun) {
-                    Remove-Item -Path $repoPath -Recurse -Force
-                } else {
-                    Write-Log -Message "DRY RUN: Would remove invalid repository at '$repoPath'" -Level Warning
-                }
-            }
-        } else {
-            # Path exists but is not a proper git repository
-            Write-Log -Message "Path '$repoPath' exists but is not a valid git repository. Removing and re-cloning." -Level Warning
+    # Handle repository renaming scenario
+    if ($existingRepo -and ($existingRepo.Path -ne $targetRepoPath)) {
+        Write-Log -Message "Found existing repository with same ID but different name: '$($existingRepo.Path)'" -Level Information
+
+        # Check if it's a valid git mirror repo with the same remote URL
+        $isValidMirror = Test-GitMirrorRepository -RepoPath $existingRepo.Path -ExpectedUrl $CloneUrl
+
+        if ($isValidMirror) {
+            Write-Log -Message "Repository has been renamed from '$($existingRepo.Name)' to '$RepoName' in GitHub. Directory will be renamed." -Level Warning
+
+            # Rename the directory
+            $targetRepoPath = Rename-GitMirrorRepository -SourcePath $existingRepo.Path -TargetPath $targetRepoPath -DryRun:$DryRun
+
             if (-not $DryRun) {
-                Remove-Item -Path $repoPath -Recurse -Force
-            } else {
-                Write-Log -Message "DRY RUN: Would remove invalid git repository at '$repoPath'" -Level Warning
+                # Update the repository
+                Update-Repository -RepoPath $targetRepoPath -RepoName $RepoName
             }
+
+            return $targetRepoPath
+        }
+        else {
+            Write-Log -Message "Existing repository with same ID is not a valid mirror of the target repository. Re-cloning required." -Level Warning
+            Remove-InvalidRepository -RepoPath $existingRepo.Path -DryRun:$DryRun
+        }
+    }
+
+    # Check if the target repository path already exists and is a valid mirror clone
+    if (Test-Path -Path $targetRepoPath) {
+        $isValidMirror = Test-GitMirrorRepository -RepoPath $targetRepoPath -ExpectedUrl $CloneUrl
+
+        if ($isValidMirror) {
+            if ($DryRun) {
+                Write-Log -Message "DRY RUN: Would update existing mirror repository '$RepoName' at '$targetRepoPath'" -Level Warning
+                return $targetRepoPath
+            }
+
+            Write-Log -Message "Mirror repository '$RepoName' already exists at '$targetRepoPath'. Updating instead of cloning." -Level Information
+            Update-Repository -RepoPath $targetRepoPath -RepoName $RepoName
+            return $targetRepoPath
+        }
+        else {
+            Write-Log -Message "Repository at '$targetRepoPath' exists but is not a valid mirror of '$CloneUrl'. Removing and re-cloning." -Level Warning
+            Remove-InvalidRepository -RepoPath $targetRepoPath -DryRun:$DryRun
         }
     }
 
     # Perform mirror clone
-    if ($DryRun) {
-        Write-Log -Message "DRY RUN: Would mirror clone repository '$RepoName' to '$repoPath'" -Level Warning
-        return $repoPath
-    }
-
-    Write-Log -Message "Mirror cloning repository '$RepoName' to '$repoPath'..." -Level Information
-    git clone --mirror $CloneUrl "`"$repoPath`""
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Log -Message "Failed to mirror clone repository '$RepoName'." -Level Error
-        return $null
-    }
-
-    return $repoPath
+    return New-GitMirrorClone -RepoName $RepoName -CloneUrl $CloneUrl -TargetPath $targetRepoPath -DryRun:$DryRun
 }
 
 function Update-Repository {
     <#
     .SYNOPSIS
-        Updates a Git repository by fetching all remote branches and tags.
+        Updates a Git repository by updating all remote branches and tags.
 
     .DESCRIPTION
-        This function updates a Git mirror repository by fetching all branches and tags
-        from the remote origin, including pruning any references that no longer exist.
+        This function updates a Git mirror repository by updating all branches and tags
+        from the remote(s), including pruning any references that no longer exist.
+        It uses the 'git remote update' command which is the recommended approach for
+        updating mirror repositories.
 
     .PARAMETER RepoPath
         The full path to the Git repository to update.
@@ -1968,25 +2265,18 @@ function Update-Repository {
         The name of the repository, used for logging purposes.
 
     .PARAMETER Remote
-        The name of the Git remote to fetch from. Defaults to 'origin'.
-
-    .PARAMETER All
-        When specified, fetches from all remotes instead of just the specified remote.
+        The name of the Git remote to update. When specified, only updates the named remote.
+        When not specified, updates all remotes.
 
     .EXAMPLE
         Update-Repository -RepoPath "D:\Backups\Repos\my-repo.git" -RepoName "my-repo"
 
-        Updates the Git repository at the specified path by fetching from the 'origin' remote.
+        Updates the Git repository at the specified path by updating all remotes.
 
     .EXAMPLE
         Update-Repository -RepoPath "D:\Backups\Repos\my-repo.git" -RepoName "my-repo" -Remote "upstream"
 
-        Updates the Git repository at the specified path by fetching from the 'upstream' remote.
-
-    .EXAMPLE
-        Update-Repository -RepoPath "D:\Backups\Repos\my-repo.git" -RepoName "my-repo" -All
-
-        Updates the Git repository at the specified path by fetching from all remotes.
+        Updates the Git repository at the specified path by updating only the 'upstream' remote.
 
     .OUTPUTS
         None
@@ -2013,10 +2303,7 @@ function Update-Repository {
 
         [Parameter(Mandatory = $false)]
         [ValidateNotNullOrEmpty()]
-        [string]$Remote = "origin",
-
-        [Parameter(Mandatory = $false)]
-        [switch]$All = $false
+        [string]$Remote
     )
 
     if (-not $RepoPath -or -not (Test-Path -Path $RepoPath)) {
@@ -2029,17 +2316,17 @@ function Update-Repository {
     try {
         Write-Log -Message "Updating repository '$RepoName'..." -Level Information
 
-        # Fetch all remote branches
-        if ($All) {
-            Write-Log -Message "Fetching all branches from all remotes for '$RepoName'..." -Level Verbose
-            git fetch --all --prune --prune-tags
+        # Update remote(s)
+        if ($Remote) {
+            Write-Log -Message "Updating remote '$Remote' for '$RepoName'..." -Level Verbose
+            git remote update --prune $Remote
         } else {
-            Write-Log -Message "Fetching all branches from remote '$Remote' for '$RepoName'..." -Level Verbose
-            git fetch --prune --prune-tags $Remote
+            Write-Log -Message "Updating all remotes for '$RepoName'..." -Level Verbose
+            git remote update --prune
         }
 
         if ($LASTEXITCODE -ne 0) {
-            Write-Log -Message "Failed to fetch remote branches for '$RepoName'." -Level Error
+            Write-Log -Message "Failed to update remote(s) for '$RepoName'." -Level Error
             return
         }
 
@@ -2109,14 +2396,30 @@ function Start-MirrorCloneBackup {
         New-DirectoryIfNotExists -Path $Destination -DryRun:$DryRun
 
         Write-Log -Message "Fetching all non-archived repositories for current GitHub user..." -Level Information
-        $repos = gh repo list --json name,url,isArchived --limit 1000 | ConvertFrom-Json | Where-Object { -not $_.isArchived }
+        $repos = @(gh repo list --json name,owner,url,isArchived --limit 1000 | ConvertFrom-Json | Where-Object { -not $_.isArchived })
 
         if (-not $repos -or $repos.Count -eq 0) {
-            Write-Log -Message "No repositories found for the current GitHub user." -Level Warning
+            Write-Log -Message "No non-archived repository found for the current GitHub user." -Level Warning
             return $false
         }
 
         Write-Log -Message "Found $($repos.Count) repositories to process." -Level Information
+
+        Write-Log -Message "Adding numeric IDs to repositories..." -Level Information
+        foreach ($repo in $repos) {
+            $repoOwnerAndName = $repo.url -replace "^https?://([^/]+)/", "" -replace "\.git$", ""
+            try {
+                $repoId = gh api "repos/$repoOwnerAndName" --jq .id 2>$null
+                if ($repoId) {
+                    $repo | Add-Member -MemberType NoteProperty -Name "id" -Value $repoId -Force
+                    Write-Log -Message "Added ID $repoId to repository $($repo.name)" -Level Verbose
+                } else {
+                    Write-Log -Message "Could not retrieve ID for repository $($repo.name)" -Level Warning
+                }
+            } catch {
+                Write-Log -Message "Error retrieving ID for repository $($repo.name): $_" -Level Warning
+            }
+        }
 
         # Clone or update each repository
         foreach ($repo in $repos) {
@@ -2125,7 +2428,7 @@ function Start-MirrorCloneBackup {
             }
 
             Write-Log -Message "Processing repository: $($repo.name)" -Level Verbose
-            $repoPath = Invoke-RepoMirrorClone -RepoName $repo.name -CloneUrl $repo.url -BasePath $Destination -DryRun:$DryRun
+            $repoPath = Invoke-RepoMirrorClone -NumericRepoID $repo.id -RepoName $repo.name -CloneUrl $repo.url -BasePath $Destination -DryRun:$DryRun
 
             if (-not $repoPath) {
                 Write-Log -Message "Failed to process repository: $($repo.name)" -Level Warning
