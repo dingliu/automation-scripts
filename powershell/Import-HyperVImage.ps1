@@ -9,7 +9,13 @@ param(
     [string]$DestinationDirectory,
 
     [Parameter(Mandatory = $true)]
-    [string]$VirtualMachineName
+    [string]$VirtualMachineName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$StaticMacAddress,
+
+    [Parameter(Mandatory = $false)]
+    [string]$VirtualSwitchName
 )
 
 #region Variables
@@ -86,6 +92,84 @@ param(
         Write-Information "Destination directory '$DestinationDirectory' exists and is valid."
     }
 
+    function Test-MacAddress {
+        <#
+        .SYNOPSIS
+            Validates a MAC address format for Hyper-V VM network adapters.
+
+        .DESCRIPTION
+            Tests if the provided MAC address string is in a valid format for Hyper-V.
+            Accepts formats like
+            - '00-15-5D-00-04-08'
+            - '00:15:5D:00:04:08'
+            - '00 15 5D 00 04 08'
+            - '00155D000408'
+
+        .PARAMETER MacAddress
+            The MAC address string to validate.
+
+        .EXAMPLE
+            Test-MacAddress -MacAddress "00-15-5D-00-04-08"
+
+        .EXAMPLE
+            Test-MacAddress -MacAddress "00:15:5D:00:04:08"
+
+        .EXAMPLE
+            Test-MacAddress -MacAddress "00155D000408"
+        #>
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory = $true)]
+            [string]$MacAddress
+        )
+
+        # Remove any dashes, colons, or spaces to normalize the format
+        $normalizedMac = $MacAddress -replace '[-:\s]', ''
+
+        # Check if it's exactly 12 hexadecimal characters
+        if ($normalizedMac -notmatch '^[0-9A-Fa-f]{12}$') {
+            throw "Invalid MAC address format. MAC address must be 12 hexadecimal characters, optionally separated by dashes, colons, or spaces. Example: 00-15-5D-00-04-08"
+        }
+
+        # Convert to Hyper-V format (with dashes every 2 characters)
+        $formattedMac = $normalizedMac -replace '(..)', '$1-' -replace '-$', ''
+
+        Write-Information "MAC address '$MacAddress' is valid. Formatted as: $formattedMac"
+        return $formattedMac
+    }
+
+    function Test-VirtualSwitch {
+        <#
+        .SYNOPSIS
+            Validates if a Hyper-V virtual switch exists.
+
+        .DESCRIPTION
+            Tests if the specified virtual switch name exists on the Hyper-V host.
+            Throws an exception if the switch does not exist.
+
+        .PARAMETER SwitchName
+            The name of the virtual switch to validate.
+
+        .EXAMPLE
+            Test-VirtualSwitch -SwitchName "Default Switch"
+
+        .EXAMPLE
+            Test-VirtualSwitch -SwitchName "External Network"
+        #>
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory = $true)]
+            [string]$SwitchName
+        )
+
+        $virtualSwitch = Get-VMSwitch -Name $SwitchName -ErrorAction SilentlyContinue
+        if (-not $virtualSwitch) {
+            throw "Virtual switch '$SwitchName' does not exist. Available switches: $((Get-VMSwitch | Select-Object -ExpandProperty Name) -join ', ')"
+        }
+
+        Write-Information "Virtual switch '$SwitchName' exists and is valid."
+        return $virtualSwitch
+    }
 
     function Get-VmcxFilepath {
         [CmdletBinding()]
@@ -124,7 +208,7 @@ param(
         $vhdDestinationPath = Join-Path -Path $virtualMachinePath -ChildPath "vhds"
 
         Write-Information "Importing VM from '$vmcxPath' to '$virtualMachinePath' with VHDs in '$vhdDestinationPath'."
-        Import-VM `
+        $importedVm = Import-VM `
             -Copy `
             -GenerateNewId `
             -Path $vmcxPath `
@@ -132,20 +216,110 @@ param(
             -SmartPagingFilePath $smartPagingFilePath `
             -SnapshotFilePath $snapshotFilePath `
             -VhdDestinationPath $vhdDestinationPath | `
-        Rename-VM -NewName $VirtualMachineName
+        Rename-VM -NewName $VirtualMachineName -PassThru
         Write-Information "VM '$VirtualMachineName' imported successfully to '$virtualMachinePath'."
+
+        return $importedVm
+    }
+
+    function Set-VmStaticMacAddress {
+        <#
+        .SYNOPSIS
+            Sets a static MAC address for a Hyper-V VM's network adapter.
+
+        .DESCRIPTION
+            Configures the network adapter of the specified VM to use a static MAC address.
+            The MAC address is validated before setting.
+
+        .PARAMETER VirtualMachineName
+            The name of the virtual machine to configure.
+
+        .PARAMETER MacAddress
+            The MAC address to set, in format like 00-15-5D-00-04-08.
+
+        .EXAMPLE
+            Set-VmStaticMacAddress -VirtualMachineName "MyVM" -MacAddress "00-15-5D-00-04-08"
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$VirtualMachineName,
+
+            [Parameter(Mandatory = $true)]
+            [string]$MacAddress
+        )
+
+        Write-Information "Setting static MAC address '$MacAddress' for VM '$VirtualMachineName'."
+        Set-VMNetworkAdapter -VMName $VirtualMachineName -StaticMacAddress $MacAddress
+        Write-Information "Static MAC address '$MacAddress' set successfully for VM '$VirtualMachineName'."
+    }
+
+    function Connect-VmToVirtualSwitch {
+        <#
+        .SYNOPSIS
+            Connects a Hyper-V VM's network adapter to a virtual switch.
+
+        .DESCRIPTION
+            Connects the network adapter of the specified VM to the specified virtual switch.
+            The virtual switch existence is validated before connecting.
+
+        .PARAMETER VirtualMachineName
+            The name of the virtual machine to configure.
+
+        .PARAMETER SwitchName
+            The name of the virtual switch to connect to.
+
+        .EXAMPLE
+            Connect-VmToVirtualSwitch -VirtualMachineName "MyVM" -SwitchName "Default Switch"
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$VirtualMachineName,
+
+            [Parameter(Mandatory = $true)]
+            [string]$SwitchName
+        )
+
+        Write-Information "Connecting VM '$VirtualMachineName' to virtual switch '$SwitchName'."
+        Connect-VMNetworkAdapter -VMName $VirtualMachineName -SwitchName $SwitchName
+        Write-Information "VM '$VirtualMachineName' successfully connected to virtual switch '$SwitchName'."
     }
 
 #endregion Functions
 
 
-#region Main
+#region Main execution
 
+    # Validate input parameters
     Test-ImageDirectoryStructure -ImagePath $SourceImageDirectory
     Test-VMName -VmName $VirtualMachineName
     Test-DestinationDirectory -DestinationDirectory $DestinationDirectory
-    Import-Image -SourceImageDirectory $SourceImageDirectory `
-        -DestinationDirectory $DestinationDirectory `
-        -VirtualMachineName $VirtualMachineName
 
-#endregion Main
+    # Validate MAC address if provided
+    $formattedMacAddress = $null
+    if ($StaticMacAddress) {
+        $formattedMacAddress = Test-MacAddress -MacAddress $StaticMacAddress
+    }
+
+    # Validate virtual switch if provided
+    if ($VirtualSwitchName) {
+        Test-VirtualSwitch -SwitchName $VirtualSwitchName
+    }
+
+    # Import the VM
+    $importedVm = Import-Image -SourceImageDirectory $SourceImageDirectory -DestinationDirectory $DestinationDirectory -VirtualMachineName $VirtualMachineName
+
+    # Set static MAC address if provided
+    if ($formattedMacAddress) {
+        Set-VmStaticMacAddress -VirtualMachineName $VirtualMachineName -MacAddress $formattedMacAddress
+    }
+
+    # Connect to virtual switch if provided
+    if ($VirtualSwitchName) {
+        Connect-VmToVirtualSwitch -VirtualMachineName $VirtualMachineName -SwitchName $VirtualSwitchName
+    }
+
+    Write-Information "VM import completed successfully."
+
+#endregion Main execution
