@@ -54,7 +54,8 @@
     https://docs.microsoft.com/en-us/windows/wsl/
     https://github.com/rupor-github/wsl-ssh-agent
 #>
-
+#Requires -Version 5.1
+#Requires -RunAsAdministrator
 [CmdletBinding()]
 param (
     [Parameter(Mandatory = $true)]
