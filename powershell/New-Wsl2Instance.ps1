@@ -1,3 +1,60 @@
+<#
+.SYNOPSIS
+    Creates a new WSL2 instance from a root filesystem tarball with automated user setup and SSH configuration.
+
+.DESCRIPTION
+    This script automates the creation of a new WSL2 instance by importing a root filesystem tarball,
+    configuring users, setting up SSH key authentication, and enabling KeeAgent support for SSH key management.
+
+    The script performs the following operations:
+    - Imports a WSL2 instance from a .tar or .tar.gz file
+    - Creates a regular user account matching the current Windows username
+    - Creates an 'ansible' user account for automation
+    - Configures SSH key authentication for both users
+    - Sets up SSH configuration sharing from Windows host
+    - Installs and configures KeeAgent support for SSH key management
+    - Installs required packages for the WSL2 instance
+
+.PARAMETER TargetParentDirectory
+    The parent directory where the new WSL2 instance will be created. Must be an existing directory.
+    A subdirectory with the instance name will be created within this path.
+
+.PARAMETER SourceRootFilesystem
+    Path to the root filesystem tarball (.tar or .tar.gz) that will be used to create the WSL2 instance.
+    The file must exist and have a .tar or .tar.gz extension.
+
+.PARAMETER TargetInstanceName
+    Name for the new WSL2 instance. Must follow WSL naming conventions:
+    - 1-63 characters long
+    - Contains only letters (A-Z, a-z), digits (0-9), and hyphens (-)
+    - Cannot start or end with a hyphen
+    - Cannot contain consecutive hyphens
+    - Must not conflict with existing WSL distribution names
+
+.PARAMETER AnsiblePublicKey
+    SSH public key content for the ansible user. This key will be added to the ansible user's
+    authorized_keys file for SSH authentication.
+
+.EXAMPLE
+    .\New-Wsl2Instance.ps1 -TargetParentDirectory "C:\WSL" -SourceRootFilesystem "C:\Downloads\fedora-39.tar.gz" -TargetInstanceName "fedora-dev" -AnsiblePublicKey "ssh-rsa AAAAB3Nza..."
+
+    Creates a new WSL2 instance named 'fedora-dev' in C:\WSL\fedora-dev using the Fedora 39 root filesystem.
+
+.NOTES
+    Prerequisites:
+    - Windows Subsystem for Linux (WSL2) must be installed and enabled
+    - PowerShell 5.1 or later
+    - Internet connection for downloading wsl-ssh-agent
+    - KeePass with KeeAgent plugin (optional, for SSH key management)
+
+    The script requires administrative privileges for some operations and will:
+    - Disable the Windows SSH agent service
+
+.LINK
+    https://docs.microsoft.com/en-us/windows/wsl/
+    https://github.com/rupor-github/wsl-ssh-agent
+#>
+
 [CmdletBinding()]
 param (
     [Parameter(Mandatory = $true)]
