@@ -1,21 +1,53 @@
 [CmdletBinding()]
 param (
     [Parameter(Mandatory = $true)]
+    [ValidateScript({
+        if (Test-Path $_ -PathType Container) {
+            $true
+        } else {
+            throw "The path '$_' does not exist or is not a directory."
+        }
+    })]
     [string] $TargetParentDirectory,
 
     [Parameter(Mandatory = $true)]
+    [ValidateScript({
+        if (-not (Test-Path $_ -PathType Leaf)) {
+            throw "The file '$_' does not exist."
+        }
+        if ($_ -notmatch '\.(tar|tar\.gz)$') {
+            throw "The file '$_' must have a .tar or .tar.gz extension."
+        }
+        $true
+    })]
     [string] $SourceRootFilesystem,
 
     [Parameter(Mandatory = $true)]
+    [ValidateScript({
+        if ($_.Length -lt 1 -or $_.Length -gt 63) {
+            throw "The instance name '$_' must be between 1 and 63 characters long."
+        }
+        if ($_ -notmatch '^[A-Za-z0-9-]+$') {
+            throw "The instance name '$_' can only contain letters (A-Z, a-z), digits (0-9), and hyphens (-)."
+        }
+        if ($_.StartsWith('-') -or $_.EndsWith('-')) {
+            throw "The instance name '$_' cannot start or end with a hyphen."
+        }
+        if ($_ -match '--') {
+            throw "The instance name '$_' cannot contain consecutive hyphens."
+        }
+        $existingDistros = wsl --list --quiet | Where-Object { $_.Trim() -ne '' }
+        if ($existingDistros -contains $_) {
+            throw "A WSL distribution named '$_' already exists. Please choose a different name."
+        }
+        $true
+    })]
     [string] $TargetInstanceName,
 
     [Parameter(Mandatory = $true)]
     [string] $AnsiblePublicKey
 )
 # TODO:
-# 1. ensure parent directory exists
-# 2. ensure source root filesystem exists
-# 3. ensure target instance name is valid
 # 4. validate user creation and other commands outcomes
 # 8. add SSH KeeAgent support from KeePass
 # 8.1 ensure ssh-agent service is disabled in Windows host
@@ -27,8 +59,10 @@ param (
 
 
 #region Constants
-$ErrorActionPreference = 'Stop'
-$InformationPreference = 'Continue'
+
+    $ErrorActionPreference = 'Stop'
+    $InformationPreference = 'Continue'
+
 #endregion Constants
 
 #region Functions
