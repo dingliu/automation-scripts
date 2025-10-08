@@ -1,3 +1,63 @@
+<#
+.SYNOPSIS
+    Imports a Hyper-V virtual machine from an exported image directory.
+
+.DESCRIPTION
+    This script imports a Hyper-V virtual machine from an exported VM image directory structure.
+    It validates the source image directory, destination directory, and VM name before import.
+    Optionally configures a static MAC address and connects the VM to a specified virtual switch.
+
+    The script expects the source image directory to contain the standard Hyper-V export structure:
+    - Virtual Hard Disks\ (containing VHD/VHDX files)
+    - Virtual Machines\ (containing .vmcx configuration file)
+
+.PARAMETER SourceImageDirectory
+    The path to the directory containing the exported Hyper-V VM image.
+    Must contain 'Virtual Hard Disks' and 'Virtual Machines' subdirectories.
+
+.PARAMETER DestinationDirectory
+    The directory where the imported VM will be stored.
+    The script will create a subdirectory with the VM name inside this directory.
+
+.PARAMETER VirtualMachineName
+    The name for the imported virtual machine.
+    Must not conflict with existing VM names and cannot contain invalid characters (< > : " / \ | ? *).
+    Maximum length is 100 characters.
+
+.PARAMETER StaticMacAddress
+    Optional. A static MAC address to assign to the VM's network adapter.
+    Accepts formats: 00-15-5D-00-04-08, 00:15:5D:00:04:08, 00 15 5D 00 04 08, or 00155D000408.
+
+.PARAMETER VirtualSwitchName
+    Optional. The name of the virtual switch to connect the VM's network adapter to.
+    The switch must exist on the Hyper-V host.
+
+.EXAMPLE
+    .\Import-HyperVImage.ps1 -SourceImageDirectory "C:\VM-Exports\MyVM" -DestinationDirectory "C:\VMs" -VirtualMachineName "ImportedVM"
+
+    Imports a VM from the exported image in C:\VM-Exports\MyVM to C:\VMs\ImportedVM.
+
+.EXAMPLE
+    .\Import-HyperVImage.ps1 -SourceImageDirectory "C:\VM-Exports\MyVM" -DestinationDirectory "C:\VMs" -VirtualMachineName "WebServer" -StaticMacAddress "00-15-5D-00-04-08" -VirtualSwitchName "External Network"
+
+    Imports a VM with a static MAC address and connects it to the "External Network" virtual switch.
+
+.NOTES
+    Requires: PowerShell version 5.1 or higher
+    Requires: Hyper-V PowerShell module
+    Requires: Hyper-V Administrator privileges
+
+    The script performs the following validations:
+    - Source image directory structure
+    - VM name validity and uniqueness
+    - Destination directory existence
+    - MAC address format (if provided)
+    - Virtual switch existence (if provided)
+
+.LINK
+    https://docs.microsoft.com/en-us/powershell/module/hyper-v/
+#>
+#Requires -Version 5.1
 #Requires -Modules Hyper-V
 
 [CmdletBinding()]
