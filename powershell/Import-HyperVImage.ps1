@@ -6,6 +6,7 @@
     This script imports a Hyper-V virtual machine from an exported VM image directory structure.
     It validates the source image directory, destination directory, and VM name before import.
     Optionally configures a static MAC address and connects the VM to a specified virtual switch.
+    For Linux VMs, it can also configure static IPv4 address using SSH.
 
     The script expects the source image directory to contain the standard Hyper-V export structure:
     - Virtual Hard Disks\ (containing VHD/VHDX files)
@@ -32,6 +33,11 @@
     Optional. The name of the virtual switch to connect the VM's network adapter to.
     The switch must exist on the Hyper-V host.
 
+.PARAMETER IPv4AddressInfo
+    Optional. Hashtable containing IPv4 configuration for Linux VMs.
+    Must include three keys: 'address' (IP/CIDR), 'gateway' (IP), and 'dns' (comma-separated IPs).
+    Example: @{address='192.168.1.100/24'; gateway='192.168.1.1'; dns='8.8.8.8,8.8.4.4'}
+
 .EXAMPLE
     .\Import-HyperVImage.ps1 -SourceImageDirectory "C:\VM-Exports\MyVM" -DestinationDirectory "C:\VMs" -VirtualMachineName "ImportedVM"
 
@@ -42,10 +48,17 @@
 
     Imports a VM with a static MAC address and connects it to the "External Network" virtual switch.
 
+.EXAMPLE
+    $ipConfig = @{address='192.168.1.100/24'; gateway='192.168.1.1'; dns='8.8.8.8,8.8.4.4'}
+    .\Import-HyperVImage.ps1 -SourceImageDirectory "C:\VM-Exports\LinuxVM" -DestinationDirectory "C:\VMs" -VirtualMachineName "LinuxServer" -IPv4AddressInfo $ipConfig
+
+    Imports a Linux VM and configures static IP address via SSH.
+
 .NOTES
     Requires: PowerShell version 5.1 or higher
     Requires: Hyper-V PowerShell module
     Requires: Hyper-V Administrator privileges
+    Requires: WSL2 with bash for static IP configuration
 
     The script performs the following validations:
     - Source image directory structure
@@ -53,6 +66,7 @@
     - Destination directory existence
     - MAC address format (if provided)
     - Virtual switch existence (if provided)
+    - IPv4 configuration format (if provided)
 
 .LINK
     https://docs.microsoft.com/en-us/powershell/module/hyper-v/
@@ -75,13 +89,18 @@ param(
     [string]$StaticMacAddress,
 
     [Parameter(Mandatory = $false)]
-    [string]$VirtualSwitchName
+    [string]$VirtualSwitchName,
+
+    [Parameter(Mandatory = $false)]
+    [hashtable]$IPv4AddressInfo
 )
 
 #region Variables
 
     $ErrorActionPreference = 'Stop'
     $InformationPreference = 'Continue'
+
+    $Script:SetStaticIpScriptRelativePath = "..\bash\set-staticip.sh"
 
 #endregion Variables
 
@@ -346,6 +365,320 @@ param(
         Write-Information "VM '$VirtualMachineName' successfully connected to virtual switch '$SwitchName'."
     }
 
+    function Test-IPv4AddressInfo {
+        <#
+        .SYNOPSIS
+            Validates the IPv4AddressInfo hashtable format.
+
+        .DESCRIPTION
+            Tests if the provided hashtable contains the required keys for IPv4 configuration.
+            Validates IP address and gateway formats.
+
+        .PARAMETER IPv4Info
+            The hashtable containing IPv4 configuration information.
+
+        .EXAMPLE
+            Test-IPv4AddressInfo -IPv4Info @{address='192.168.1.100/24'; gateway='192.168.1.1'; dns='8.8.8.8,8.8.4.4'}
+        #>
+        [CmdletBinding()]
+        param (
+            [Parameter(Mandatory = $true)]
+            [hashtable]$IPv4Info
+        )
+
+        $requiredKeys = @('address', 'gateway', 'dns')
+        foreach ($key in $requiredKeys) {
+            if (-not $IPv4Info.ContainsKey($key)) {
+                throw "IPv4AddressInfo hashtable is missing required key: '$key'. Required keys: $($requiredKeys -join ', ')"
+            }
+            if ([string]::IsNullOrWhiteSpace($IPv4Info[$key])) {
+                throw "IPv4AddressInfo hashtable key '$key' cannot be null or empty."
+            }
+        }
+
+        # Validate IP address format (basic validation)
+        if ($IPv4Info.address -notmatch '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$') {
+            throw "Invalid IP address format in 'address'. Expected format: 192.168.1.100/24"
+        }
+
+        if ($IPv4Info.gateway -notmatch '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
+            throw "Invalid gateway IP format in 'gateway'. Expected format: 192.168.1.1"
+        }
+
+        # Validate DNS servers format
+        $dnsServers = $IPv4Info.dns -split ','
+        foreach ($dns in $dnsServers) {
+            $dns = $dns.Trim()
+            if ($dns -notmatch '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
+                throw "Invalid DNS server IP format: '$dns'. Expected format: 8.8.8.8"
+            }
+        }
+
+        Write-Information "IPv4AddressInfo configuration is valid."
+        Write-Information "  Address: $($IPv4Info.address)"
+        Write-Information "  Gateway: $($IPv4Info.gateway)"
+        Write-Information "  DNS: $($IPv4Info.dns)"
+    }
+
+    function Test-WSLAvailability {
+        <#
+        .SYNOPSIS
+            Tests if WSL2 is available and can execute bash commands.
+
+        .DESCRIPTION
+            Verifies that WSL is installed and can execute basic commands.
+            Also checks if the specified bash script exists.
+
+        .PARAMETER BashScriptPath
+            The absolute path to the bash script to validate.
+
+        .EXAMPLE
+            Test-WSLAvailability -BashScriptPath "C:\path\to\set-staticip.sh"
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$BashScriptPath
+        )
+
+        try {
+            $wslVersion = wsl --version 2>$null
+            if (-not $wslVersion) {
+                throw "WSL is not installed or not available."
+            }
+            Write-Information "WSL is available."
+
+            # Test bash execution
+            $bashTest = wsl --exec bash -c "echo 'WSL bash test successful'" 2>$null
+            if ($bashTest -ne "WSL bash test successful") {
+                throw "Unable to execute bash commands in WSL."
+            }
+            Write-Information "WSL bash execution is working."
+
+            # Check if the specified bash script exists
+            if (-not (Test-Path -Path $BashScriptPath)) {
+                throw "Bash script not found at: $BashScriptPath"
+            }
+            Write-Information "Bash script found at: $BashScriptPath"
+
+        } catch {
+            throw "WSL availability check failed: $($_.Exception.Message)"
+        }
+    }
+
+    function Get-SshCredentials {
+        <#
+        .SYNOPSIS
+            Interactively prompts user for SSH credentials.
+
+        .DESCRIPTION
+            Prompts the user to enter SSH username, private key file path, and passphrase.
+            Validates that the SSH key file exists.
+
+        .EXAMPLE
+            $creds = Get-SshCredentials
+        #>
+        [CmdletBinding()]
+        param()
+
+        Write-Information "SSH credentials are required to configure static IP address."
+
+        # Get SSH username
+        $sshUsername = Read-Host -Prompt "Enter SSH username"
+        if ([string]::IsNullOrWhiteSpace($sshUsername)) {
+            throw "SSH username cannot be empty."
+        }
+
+        # Get SSH private key path
+        $sshKeyPath = Read-Host -Prompt "Enter SSH private key file path"
+        if ([string]::IsNullOrWhiteSpace($sshKeyPath)) {
+            throw "SSH private key path cannot be empty."
+        }
+        $sshKeyWindowsPath = $(wsl --exec bash -c "wslpath -w `$(realpath $sshKeyPath)")
+        Write-Information "SSH key Windows path: $sshKeyWindowsPath"
+        if (-not (Test-Path -Path $sshKeyWindowsPath)) {
+            throw "SSH private key file not found: $sshKeyPath"
+        }
+
+        # Get SSH passphrase
+        $sshPassphrase = Read-Host -Prompt "Enter SSH private key passphrase" -AsSecureString
+        $sshPassphraseText = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sshPassphrase))
+
+        if ([string]::IsNullOrWhiteSpace($sshPassphraseText)) {
+            throw "SSH passphrase cannot be empty."
+        }
+
+        return @{
+            Username = $sshUsername
+            KeyPath = $sshKeyPath
+            Passphrase = $sshPassphraseText
+        }
+    }
+
+    function Get-VmCurrentIPAddress {
+        <#
+        .SYNOPSIS
+            Retrieves the current IP address of a Hyper-V VM.
+
+        .DESCRIPTION
+            Uses Hyper-V integration services to get the current IP address of the specified VM.
+            The VM must be running and have integration services installed.
+
+        .PARAMETER VirtualMachineName
+            The name of the virtual machine to query.
+
+        .EXAMPLE
+            Get-VmCurrentIPAddress -VirtualMachineName "MyVM"
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$VirtualMachineName
+        )
+
+        Write-Information "Retrieving current IP address for VM '$VirtualMachineName'..."
+
+        # Wait for VM to be fully started and integration services to be available
+        $maxAttempts = 30
+        $attempt = 0
+        $currentIP = $null
+
+        do {
+            $attempt++
+            Start-Sleep -Seconds 2
+
+            try {
+                $vm = Get-VM -Name $VirtualMachineName
+                if ($vm.State -ne 'Running') {
+                    Write-Information "VM is not running. Starting VM '$VirtualMachineName'..."
+                    Start-VM -Name $VirtualMachineName
+                    Start-Sleep -Seconds 5
+                    continue
+                }
+
+                $networkAdapters = Get-VMNetworkAdapter -VMName $VirtualMachineName
+                foreach ($adapter in $networkAdapters) {
+                    if ($adapter.IPAddresses) {
+                        # Get the first IPv4 address (filter out IPv6)
+                        $currentIP = $adapter.IPAddresses | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' } | Select-Object -First 1
+                        if ($currentIP) {
+                            break
+                        }
+                    }
+                }
+
+                if ($currentIP) {
+                    Write-Information "Current IP address found: $currentIP"
+                    return $currentIP
+                }
+
+            } catch {
+                Write-Information "Attempt $attempt failed: $($_.Exception.Message)"
+            }
+
+            Write-Information "Attempt $attempt of $maxAttempts - waiting for IP address..."
+
+        } while ($attempt -lt $maxAttempts -and -not $currentIP)
+
+        if (-not $currentIP) {
+            throw "Unable to retrieve current IP address for VM '$VirtualMachineName' after $maxAttempts attempts. Please ensure the VM is running and has integration services installed."
+        }
+    }
+
+    function Set-VmStaticIPAddress {
+        <#
+        .SYNOPSIS
+            Configures static IP address for a Linux VM using the specified bash script.
+
+        .DESCRIPTION
+            Uses WSL2 to execute the provided bash script to configure static IP address
+            on the specified Linux VM via SSH.
+
+        .PARAMETER VirtualMachineName
+            The name of the virtual machine to configure.
+
+        .PARAMETER CurrentIPAddress
+            The current IP address of the VM.
+
+        .PARAMETER IPv4Info
+            Hashtable containing the static IP configuration.
+
+        .PARAMETER SshCredentials
+            Hashtable containing SSH credentials.
+
+        .PARAMETER BashScriptPath
+            The absolute path to the bash script to execute.
+
+        .EXAMPLE
+            Set-VmStaticIPAddress -VirtualMachineName "LinuxVM" -CurrentIPAddress "192.168.1.50" -IPv4Info $ipConfig -SshCredentials $sshCreds -BashScriptPath "C:\path\to\set-staticip.sh"
+        #>
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory = $true)]
+            [string]$VirtualMachineName,
+
+            [Parameter(Mandatory = $true)]
+            [string]$CurrentIPAddress,
+
+            [Parameter(Mandatory = $true)]
+            [hashtable]$IPv4Info,
+
+            [Parameter(Mandatory = $true)]
+            [hashtable]$SshCredentials,
+
+            [Parameter(Mandatory = $true)]
+            [string]$BashScriptPath
+        )
+        $targetIpCidr = $IPv4Info.address
+        $targetIpAddress = $targetIpCidr.Split('/')[0]
+        Write-Information "Configuring static IP address for VM '$VirtualMachineName'..."
+        Write-Information "Current IP: $CurrentIPAddress"
+        Write-Information "Target static IP: $($targetIpCidr)"
+
+        # Convert Windows paths to WSL paths using wslpath
+        $scriptWSLPath = $(wsl --exec bash -c "wslpath -u '$BashScriptPath'")
+        Write-Information "Script WSL path: $scriptWSLPath"
+        $sshKeyWSLPath = $(wsl --exec bash -c "realpath $($SshCredentials.KeyPath)")
+
+        Set-SshHostKeys -IPAddress $CurrentIPAddress
+
+        # Build the command with history management
+        $bashCommand = "set +o history; " +
+                      "'$scriptWSLPath' " +
+                      "-p '$($SshCredentials.Passphrase)' " +
+                      "-k '$sshKeyWSLPath' " +
+                      "-t '$CurrentIPAddress' " +
+                      "-u '$($SshCredentials.Username)' " +
+                      "-a '$($targetIpCidr)' " +
+                      "-g '$($IPv4Info.gateway)' " +
+                      "-d '$($IPv4Info.dns)'; " +
+                      "set -o history"
+
+        Write-Information "Executing static IP configuration script..."
+        try {
+            $result = wsl --exec bash -c $bashCommand
+            Write-Information "Static IP configuration completed successfully."
+            Write-Information "Script output: $result"
+        } catch {
+            throw "Failed to configure static IP address: $($_.Exception.Message)"
+        }
+        Set-SshHostKeys -IPAddress $targetIpAddress
+    }
+
+    function Set-SshHostKeys {
+        # Manage SSH host keys to avoid host verification issues
+        param (
+            [string]$IPAddress
+        )
+            Write-Information "Managing SSH host keys for IP address: $IPAddress"
+            try {
+                wsl --exec bash -c "ssh-keygen -R $IPAddress && ssh-keyscan -H $IPAddress >> ~/.ssh/known_hosts"
+                Write-Information "SSH host keys updated successfully."
+            } catch {
+                Write-Warning "Failed to update SSH host keys, but continuing: $($_.Exception.Message)"
+            }
+    }
+
 #endregion Functions
 
 
@@ -367,6 +700,14 @@ param(
         Test-VirtualSwitch -SwitchName $VirtualSwitchName
     }
 
+    # Validate IPv4 configuration if provided
+    $sshCredentials = $null
+    if ($IPv4AddressInfo) {
+        Test-IPv4AddressInfo -IPv4Info $IPv4AddressInfo
+        Test-WSLAvailability -BashScriptPath $SetStaticIpScriptRelativePath
+        $sshCredentials = Get-SshCredentials
+    }
+
     # Import the VM
     $importedVm = Import-Image -SourceImageDirectory $SourceImageDirectory -DestinationDirectory $DestinationDirectory -VirtualMachineName $VirtualMachineName
 
@@ -378,6 +719,13 @@ param(
     # Connect to virtual switch if provided
     if ($VirtualSwitchName) {
         Connect-VmToVirtualSwitch -VirtualMachineName $VirtualMachineName -SwitchName $VirtualSwitchName
+    }
+
+    # Configure static IP address if provided
+    if ($IPv4AddressInfo -and $sshCredentials) {
+        $currentIP = Get-VmCurrentIPAddress -VirtualMachineName $VirtualMachineName
+        Set-VmStaticIPAddress -VirtualMachineName $VirtualMachineName -CurrentIPAddress $currentIP -IPv4Info $IPv4AddressInfo -SshCredentials $sshCredentials -BashScriptPath $SetStaticIpScriptRelativePath
+        Write-Information "Static IP address configuration completed."
     }
 
     Write-Information "VM import completed successfully."
