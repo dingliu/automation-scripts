@@ -151,11 +151,10 @@ scan_host_key() {
 
 refresh_host_key() {
     local host="$1"
-    local yes=0; local no=1 # success/failure constants
-    local is_successful=$yes
+    local is_successful=true
 
     echo ""
-    echo "=== Processing host: $host ==="
+    echo "==== Processing host: $host ===="
 
     # Always try to remove existing key (handles non-existent keys gracefully)
     remove_host_key "$host"
@@ -163,20 +162,20 @@ refresh_host_key() {
     # Test connectivity before attempting to scan
     if test_host_connectivity "$host"; then
         if ! scan_host_key "$host"; then
-            is_successful=$no
+            is_successful=false
         fi
     else
         echo "[Warning] Skipping host key scan for unreachable host: $host"
-        is_successful=$no
+        is_successful=false
     fi
 
     if $is_successful; then
         echo "[OK] Host key refresh completed successfully for $host"
+        return 0
     else
         echo "[Warning] Host key refresh failed for $host"
+        return 1
     fi
-
-    return $is_successful
 }
 
 # Parse command line options
