@@ -137,7 +137,8 @@ param (
 
         Write-Information "Set WSL2 instance configuration for '$TargetInstanceName'."
         Set-Wsl2InstanceConfiguration `
-            -InstanceName $TargetInstanceName
+            -InstanceName $TargetInstanceName `
+            -Username $env:USERNAME
 
         Write-Information "Shutting down WSL."
         Invoke-WslShutdown
@@ -330,7 +331,7 @@ param (
     }
 
     function Invoke-WslSshAgentDownload {
-        $wslSshAgentVersion = "1.6.8"
+        $wslSshAgentVersion = "1.6.9"
         $wslSshAgentArchiveName = "wsl-ssh-agent.zip"
         Write-Information "Downloading wsl-ssh-agent version $wslSshAgentVersion."
         $wslSshAgentUrl = "https://github.com/rupor-github/wsl-ssh-agent/releases/download/v${wslSshAgentVersion}/wsl-ssh-agent.zip"
